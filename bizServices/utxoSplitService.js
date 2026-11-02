@@ -51,8 +51,11 @@ class UtxoSplitService {
 
         // to check asset total amount if match assetAmountThresheld in balanced config   
         let strTresheldAmount = this.curBalancedParams.balancedCfg.assetAmountThresheld[assetUnit.replace(".", "")];
-        let splitTresheldAmount = CardanoWasm.BigNum.from_str(strTresheldAmount);
+        if (undefined === strTresheldAmount) {
+            return false;
+        }
 
+        let splitTresheldAmount = CardanoWasm.BigNum.from_str(strTresheldAmount);
         if (totalAssetAmount.less_than(splitTresheldAmount)) {
             return false;
         }

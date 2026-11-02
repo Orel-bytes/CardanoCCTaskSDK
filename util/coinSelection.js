@@ -15,14 +15,14 @@ class CoinSelection {
 
   /**
    * Set protocol parameters required by the algorithm
-   * @param {string} coinsPerUtxoWord
+   * @param {string} coinsPerUtxoByte
    * @param {string} minFeeA
    * @param {string} minFeeB
    * @param {string} maxTxSize
    */
-  setProtocolParameters(coinsPerUtxoWord, minFeeA, minFeeB, maxTxSize) {
+  setProtocolParameters(coinsPerUtxoByte, minFeeA, minFeeB, maxTxSize) {
     this.protocolParameters = {
-      coinsPerUtxoWord: coinsPerUtxoWord,
+      coinsPerUtxoByte: coinsPerUtxoByte,
       minFeeA: minFeeA,
       minFeeB: minFeeB,
       maxTxSize: maxTxSize,
@@ -107,19 +107,25 @@ class CoinSelection {
    * @param {Value} outputAmount - Single compiled output qty requested for payment.
    * @param {Value} cumulatedAmount - Single compiled accumulated UTxO qty.
    * @param {int} nbFreeUTxO - Number of free UTxO available.
+   * @param {Address} toAddress - target address.
    * @return {boolean}
    */
-  isQtyFulfilled(outputAmount, cumulatedAmount, nbFreeUTxO) {
+  isQtyFulfilled(outputAmount, cumulatedAmount, nbFreeUTxO, toAddress) {
     let amount = outputAmount;
 
     if (!outputAmount.multiasset() || outputAmount.multiasset().len() <= 0) {
+      // let minRequired = CardanoWasm.min_ada_required(
+      //   cumulatedAmount,
+      //   false,
+      //   CardanoWasm.BigNum.from_str(this.protocolParameters.coinsPerUtxoWord)
+      // );
 
-      let minRequired = CardanoWasm.min_ada_required(
-        cumulatedAmount,
-        false,
-        CardanoWasm.BigNum.from_str(this.protocolParameters.coinsPerUtxoWord)
+      let txOutput = CardanoWasm.TransactionOutput.new(toAddress, outputAmount);
+      let dataCost = CardanoWasm.DataCost.new_coins_per_byte(
+        CardanoWasm.BigNum.from_str(this.protocolParameters.coinsPerUtxoByte)
       );
 
+      let minRequired = CardanoWasm.min_ada_for_output(txOutput, dataCost);
       let minAmount = CardanoWasm.Value.new(minRequired);
 
       // Lovelace min amount to cover assets and number of output need to be met
@@ -154,15 +160,16 @@ class CoinSelection {
    * @param {UTxOSelection} utxoSelection - The set of selected/available inputs.
    * @param {Value} outputAmount - Single compiled output qty requested for payment.
    * @param {int} limit - A limit on the number of inputs that can be selected.
+   * @param {Address} toAddress - target address.
    * @throws INPUT_LIMIT_EXCEEDED if the number of randomly picked inputs exceed 'limit' parameter.
    * @throws INPUTS_EXHAUSTED if all UTxO doesn't hold enough funds to pay for output.
    * @return {UTxOSelection} - Successful random utxo selection.
    */
-  randomSelect(utxoSelection, outputAmount, limit) {
+  randomSelect(utxoSelection, outputAmount, limit, toAddress) {
     let nbFreeUTxO = utxoSelection.subset.length;
 
     // If quantity is met, return subset into remaining list and exit
-    if (this.isQtyFulfilled(outputAmount, utxoSelection.amount, nbFreeUTxO)) {
+    if (this.isQtyFulfilled(outputAmount, utxoSelection.amount, nbFreeUTxO, toAddress)) {
 
       utxoSelection.remaining = [
         ...utxoSelection.remaining,
@@ -191,7 +198,7 @@ class CoinSelection {
       utxoSelection.amount
     );
 
-    return this.randomSelect(utxoSelection, outputAmount, limit - 1);
+    return this.randomSelect(utxoSelection, outputAmount, limit - 1, toAddress);
   }
 
   /**
@@ -245,25 +252,26 @@ class CoinSelection {
    * @param {UTxOSelection} utxoSelection - The set of selected/available inputs.
    * @param {Value} outputAmount - Single compiled output qty requested for payment.
    * @param {int} limit - A limit on the number of inputs that can be selected.
+   * @param {Address} toAddress - target address.
    * @throws INPUT_LIMIT_EXCEEDED if the number of randomly picked inputs exceed 'limit' parameter.
    * @throws INPUTS_EXHAUSTED if all UTxO doesn't hold enough funds to pay for output.
    * @return {UTxOSelection} - Successful random utxo selection.
    */
-  select(utxoSelection, outputAmount, limit) {
+  select(utxoSelection, outputAmount, limit, toAddress) {
     try {
       let clonedSelection = this.cloneUTxOSelection(utxoSelection);
 
       utxoSelection = this.randomSelect(
         clonedSelection, // Deep copy in case of fallback needed
         outputAmount,
-        limit - utxoSelection.selection.length
+        limit - utxoSelection.selection.length,
+        toAddress
       );
     } catch (e) {
       if (e.message === 'INPUT_LIMIT_EXCEEDED') {
         // Limit reached : Fallback on DescOrdAlgo
-        // utxoSelection = this.descSelect(utxoSelection, outputAmount, limit);
+        utxoSelection = this.descSelect(utxoSelection, outputAmount, limit, toAddress);
         console.log("...error : descSelect: ", e);
-        throw e;
       } else {
         console.log("...error : select: ", e);
         throw e;
@@ -277,10 +285,11 @@ class CoinSelection {
    * Select enough UTxO in DESC order to fulfill requested outputs
    * @param {UTxOSelection} utxoSelection - The set of selected/available inputs.
    * @param {Value} outputAmount - Single compiled output qty requested for payment.
+   * @param {Address} toAddress - target address.
    * @throws INPUTS_EXHAUSTED if all UTxO doesn't hold enough funds to pay for output.
    * @return {UTxOSelection} - Successful random utxo selection.
    */
-  descSelect(utxoSelection, outputAmount, limit) {
+  descSelect(utxoSelection, outputAmount, limit, toAddress) {
     // Sort UTxO subset in DESC order for required Output unit type
     utxoSelection.subset = utxoSelection.subset.sort((a, b) => {
       return Number(
@@ -313,7 +322,8 @@ class CoinSelection {
       !this.isQtyFulfilled(
         outputAmount,
         utxoSelection.amount,
-        utxoSelection.subset.length - 1
+        utxoSelection.subset.length - 1,
+        toAddress
       )
     );
 
@@ -359,9 +369,10 @@ class CoinSelection {
    * @param {UTxOList} inputs - The set of inputs available for selection.
    * @param {TransactionOutputs} outputs - The set of outputs requested for payment.
    * @param {int} limit - A limit on the number of inputs that can be selected.
+   * @param {Address} toAddress - target address.
    * @return {SelectionResult} - Coin Selection algorithm return
    */
-  randomImprove(inputs, outputs, limit) {
+  randomImprove(inputs, outputs, limit, toAddress) {
     if (!this.protocolParameters)
       throw new Error(
         'Protocol parameters not set. Use setProtocolParameters().'
@@ -385,7 +396,7 @@ class CoinSelection {
     for (let i = 0; i < splitOutputsAmounts.length; i++) {
       this.createSubSet(utxoSelection, splitOutputsAmounts[i]); // Narrow down for NatToken UTxO
 
-      utxoSelection = this.select(utxoSelection, splitOutputsAmounts[i], limit);
+      utxoSelection = this.select(utxoSelection, splitOutputsAmounts[i], limit, toAddress);
     }
 
     // Phase 2: Improve

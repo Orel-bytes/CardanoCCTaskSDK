@@ -35,7 +35,7 @@ async function main(){
 	// console.log("convert result: ", "0x"+ret);
 	let ogmiosConfig = {
 		"host": "http://52.13.9.234",
-		"port": 4337
+		"port": 6337
 	}
 
 	let connectorInst = new ogmiosApi(ogmiosConfig);
@@ -43,18 +43,18 @@ async function main(){
 
 	let plutusTxSrvInst = new plutusTxService(connectorInst, scriptRefOwnerAddr, console, false);
 	let ret = await plutusTxSrvInst.init();
+	console.log("init result: ", ret);
 	
-	// {
-	// 	const scAddress = plutusTxSrvInst.getLockerScAddress(bNftTask);
-	// 	console.log("scAddress: ", scAddress);
-	// }
+	{
+		let bNftTask = true;
+		const scAddress = plutusTxSrvInst.getLockerScAddress(bNftTask);
+		console.log("scAddress: ", scAddress);
+	}
 
 	let nftAmount = {
 	// 	"f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a.000de140326e645f70696c6f74": "1",
 	// 	"f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a.000de1403372645f70696c6f74": "1"
-		"343ac71f7f3b2dbd4efa1e9735c2ac2cb7ae777d5325db23d9f77332.0014df10546573744e465434": 2,
-		"343ac71f7f3b2dbd4efa1e9735c2ac2cb7ae777d5325db23d9f77332.0014df10546573744e465433": 1,
-		"343ac71f7f3b2dbd4efa1e9735c2ac2cb7ae777d5325db23d9f77332.0014df10546573744e465432": 4
+		"343ac71f7f3b2dbd4efa1e9735c2ac2cb7ae777d5325db23d9f77332.0014df10546573744e465432": 2
 	};
 
 	let bNftTask = true;

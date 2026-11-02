@@ -14,7 +14,7 @@ class UtxosManager {
         this.logger = logUtil;
 
         this.ADDR_PREFIX = config.PlutusCfg.testnetPrefix;
-        this.network_id = CardanoWasm.NetworkInfo.testnet().network_id();
+        this.network_id = CardanoWasm.NetworkInfo.testnet_preprod().network_id();
         if (bMainnet) {
             this.ADDR_PREFIX = config.PlutusCfg.mainnetPrefix;
             this.network_id = CardanoWasm.NetworkInfo.mainnet().network_id();
@@ -22,6 +22,7 @@ class UtxosManager {
         this.maxPlutusUtxoNum = config.PlutusCfg.maxUtxoNum;
 
         this.coinsPerUtxoWord = undefined;
+        this.coinsPerUtxoByte = undefined;
         this.minFeeA = undefined;
         this.minFeeB = undefined;
         this.protocolParams = undefined;
@@ -112,6 +113,7 @@ class UtxosManager {
                 this.minFeeA = JSON.stringify(this.protocolParams.minFeeCoefficient);
                 this.minFeeB = JSON.stringify(this.protocolParams.minFeeConstant);
                 this.coinsPerUtxoWord = JSON.stringify(this.protocolParams.coinsPerUtxoByte * 2);
+                this.coinsPerUtxoByte = JSON.stringify(this.protocolParams.coinsPerUtxoByte);
                 this.maxTxSize = JSON.stringify(this.protocolParams.maxTxSize);
 
             } catch (e) {
@@ -183,7 +185,7 @@ class UtxosManager {
             try {
                 do {
                     let rslt = await this.connector.getAddressUTXOsWithBlockHeight(address, pageNumber, itemCount, 'asc');
-                    // this.logger.debug(`..UtxosManager...getAddressUTXOsWithBlockHeight ${address}...${rslt.utxos}`);        
+                    // console.log(`..UtxosManager...getAddressUTXOsWithBlockHeight ${address}...${rslt.utxos}`);        
                     if (null == rslt) {
                         break;
                     } else {
@@ -277,7 +279,7 @@ class UtxosManager {
     }
 
 
-    checkPreReservedUtxo(availableUtxos, txId, amount) {
+    checkPreReservedUtxo(utxos, txId, amount) {
         // Step 1: to check if there is preReserved utxo for this task
         // reservedInfo = {
         //     "utxoId": preReservedUtxoId,
@@ -289,30 +291,30 @@ class UtxosManager {
             // there is no reserved utxo for this task
             let ret = {
                 "reservedUtxo": undefined,
-                "reservedStatus": "NoPreReserved", // "noPreReserved"
+                "reservedStatus": "NoReserved", // "noPreReserved"
                 "marginAmount": amount
             }
             return ret;
         }
 
         // Step 2: to check whether the preReserved utxo is available 
-        let preReservedUtxo = this.commonUtil.getUtxoByUtxoId(availableUtxos, reservedInfo.utxoId);
+        let preReservedUtxo = this.commonUtil.getUtxoByUtxoId(utxos, reservedInfo.utxoId);
         if (undefined === preReservedUtxo) {
             // the preReserved utxos is no available by now
             let ret = {
                 "reservedUtxo": undefined,
-                "reservedStatus": "PendingAvailable",
+                "reservedStatus": "PendingReserved",
                 "marginAmount": undefined
             }
             return ret;
         }
 
         // Step 3: to check the amount of preReserved utxo whether has reached the transfer amount 
-        let marginAmount = this.commonUtil.caculateMarginNftAmount(amount, reservedInfo.nftInfos);
+        let marginAmount = this.commonUtil.caculateMarginNftAmount(amount, reservedInfo);
         let ret = {
             // the preReserved utxo is available
             "reservedUtxo": preReservedUtxo,
-            "reservedStatus": "Available",
+            "reservedStatus": "ReservedAvailable",
             "marginAmount": marginAmount
         }
 
@@ -320,6 +322,27 @@ class UtxosManager {
         this.updatePreReservedUtxoInfo();
 
         return ret;
+    }
+
+    async getTotalUtxos(fromAddress) {
+        let pendingSelectionUtxos = new Array();
+
+        // step 1: to get utxos of fromAddress
+        let utxos = await this.getUtxo(fromAddress, (this.paymentAddress !== fromAddress));
+        this.logger.debug("..getTotalUtxos...getUtxo utxos: ", this.paymentAddress, fromAddress, utxos.length);
+        if (0 === utxos.length) {
+            return pendingSelectionUtxos;
+        }
+
+        // step 2: to filter utxos in security block scopes
+        for (let i = 0; i < utxos.length; i++) {
+            if ((undefined !== utxos[i].blockHeight)
+                && (utxos[i].blockHeight <= (this.curLatestBlock.height - config.SecurityBlocksForCoinSelection))) {
+                pendingSelectionUtxos.push(utxos[i]);
+            }
+        }
+
+        return pendingSelectionUtxos;
     }
 
     async getNftUtxoOfAmount(fromAddress, toAddress, amount, limit = undefined, uniqueId = undefined) {
@@ -415,7 +438,7 @@ class UtxosManager {
         this.logger.debug("..UtxosManager......checkAvailableUtxos: ", availableUtxos.length);
 
         limit = (undefined === limit) ? limit : (limit - selectedUtxos.length);
-        this.utxoSelectionService.setProtocolParameters(this.coinsPerUtxoWord, this.minFeeA, this.minFeeB, '10000');
+        this.utxoSelectionService.setProtocolParameters(this.coinsPerUtxoByte, this.minFeeA, this.minFeeB, '10000');
         let filtedUtxo = this.utxoSelectionService.selectUtxos(availableUtxos, toAddress, amount, limit, true);
         if (0 === filtedUtxo.length) {
             // in case no any suitable utxo is selected
@@ -658,6 +681,7 @@ class UtxosManager {
 
         let revertedUtxos = new Array();
         for (let i = 0; i < aryUtxos.length; i++) {
+            this.logger.debug("..UtxosManager...release utxo: ", JSON.stringify(aryUtxos[i]));
             let utxoItem = {
                 "txId": aryUtxos[i].txHash,
                 "index": aryUtxos[i].index
@@ -756,8 +780,17 @@ class UtxosManager {
         }
     }
 
+    deletePreReservedUtxoInfo(txId) {
+        for (let [utxoId, reservedInfo] of this.mapReservedNftUtxo) {
+            // let reservedInfo = this.mapReservedNftUtxo.get(utxoId);
+            if (txId === reservedInfo.reservedTxId) {
+                this.mapReservedNftUtxo.delete(utxoId);
+            }
+        }
+    }
+
     getPreReservedUtxoInfoByTxId(txId) {
-        
+
         // mapReservedNftUtxo:  utxoId -> {reservedTxId, reservedAmount, reservedSlot}
         for (let [utxoId, reservedInfo] of this.mapReservedNftUtxo) {
             // let reservedInfo = this.mapReservedNftUtxo.get(utxoId);
@@ -775,7 +808,7 @@ class UtxosManager {
     }
 
     getPreReservedInfoByUtxoId(utxoId, txId) {
-        
+
         // mapReservedNftUtxo:  utxoId -> {reservedTxId, reservedAmount, reservedSlot}        
         let reservedInfo = this.mapReservedNftUtxo.get(utxoId);
         if (undefined === reservedInfo) {

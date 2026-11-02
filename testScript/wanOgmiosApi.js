@@ -276,6 +276,30 @@ class WanOgmiosApi {
         }
     }
 
+    async evaluateTx(signedTx) {
+        const strTxRaw = Buffer.from(signedTx).toString('hex');
+        console.error('WanOgmiosApi - evaluateTx strTxRaw: ', strTxRaw);
+        
+        let data = {
+            "rawTx": strTxRaw
+        };
+
+        let reqPath = '/evaluateTx';
+        try{
+            let res = await axios.post(this.ogmiosUrl + reqPath, data);
+            console.log('evaluateTx: ', res);  
+            if(undefined === res){
+                return undefined;
+            }          
+            let ret = ('' === res.data)?undefined:res.data;
+            return ret;
+            
+        }catch(err){
+            console.error('WanOgmiosApi - evaluateTx, e: ', err);
+            return undefined;
+        }
+    }
+
     async txsUtxos(strTxId) {
         
         let data = {

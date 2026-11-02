@@ -4,9 +4,11 @@ const utils = require('./utils');
 const BigNumber = require('bignumber.js');
 
 const plutus = require('./plutus');
+const cbor = require('cbor-sync');
 
 const contractMgr = require('./contracts-mgr');
 const nftContracts = require('./nft-contract');
+const msgContracts = require('./msg-contract');
 let MAPPINGTOKEN_POLICY;
 // let groupInfoTokenPlutus;
 // let groupInfoTokenHolderPlutus;
@@ -27,12 +29,13 @@ let mintCheckTokenScript;
 // const GroupInfoTokenName = 'GroupInfoTokenCoin';
 // const CheckTokenName = 'CheckTokenCoin';
 
-const DEV = true;
+const PRD = true;
 function getCostModels(protocolParams) {
-    if (DEV) {
+    if (PRD) {
         return protocolParams.costModels;
+        // return CardanoWasm.TxBuilderConstants.plutus_conway_cost_models();//protocolParams.costModels;
     } else {
-        return CardanoWasm.TxBuilderConstants.plutus_vasil_cost_models();
+        return CardanoWasm.TxBuilderConstants.plutus_conway_cost_models();
     }
 }
 
@@ -44,10 +47,10 @@ class TreasuryCheckScript {
     static address(stake_cred = undefined) {
         if (stake_cred) {
             return CardanoWasm.BaseAddress.new(Network_Id
-                , CardanoWasm.StakeCredential.from_scripthash(TreasuryCheckScript.script().hash())
-                , CardanoWasm.StakeCredential.from_scripthash(CardanoWasm.ScriptHash.from_hex(stake_cred))).to_address();
+                , CardanoWasm.Credential.from_scripthash(TreasuryCheckScript.script().hash())
+                , CardanoWasm.Credential.from_scripthash(CardanoWasm.ScriptHash.from_hex(stake_cred))).to_address();
         } else {
-            return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.StakeCredential.from_scripthash(TreasuryCheckScript.script().hash())).to_address();
+            return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.Credential.from_scripthash(TreasuryCheckScript.script().hash())).to_address();
         }
     }
 
@@ -147,7 +150,7 @@ class TreasuryCheckScript {
             // const value = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(utxoForFee.value + ''));
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
-            txInputBuilder.add_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
             inputs_arr.push(utxoForFee.txHash + '#' + utxoForFee.index);
         }
 
@@ -161,7 +164,7 @@ class TreasuryCheckScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
@@ -181,7 +184,7 @@ class TreasuryCheckScript {
         const treasuryCheckScriptHash = CardanoWasm.ScriptHash.from_hex(utils.addressToPkhOrScriptHash(treasuryCheckUxto.address));
         {
             const utxoToSpend = treasuryCheckUxto;
-            // txBuilder.add_script_input
+
             const txId = CardanoWasm.TransactionHash.from_bytes(Buffer.from(utxoToSpend.txHash, 'hex'));
             const input = CardanoWasm.TransactionInput.new(txId, utxoToSpend.index);
             // const value = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(utxoToSpend.value + ''));
@@ -200,9 +203,11 @@ class TreasuryCheckScript {
 
             const redeemer = CardanoWasm.Redeemer.new(CardanoWasm.RedeemerTag.new_spend(), CardanoWasm.BigNum.from_str('0'), redeemerData, exUnits);
 
-            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-                treasuryCheckScriptHash, authorityCheckRefenceInput, CardanoWasm.Language.new_plutus_v2())
-                // , CardanoWasm.DatumSource.new_ref_input(input)
+
+            const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(treasuryCheckRef);
+
+            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input(
+                treasuryCheckScriptHash, authorityCheckRefenceInput, scriptTmp.language_version(), scriptSize)
                 , redeemer);
 
             txInputBuilder.add_plutus_script_input(witness, input, value);
@@ -322,11 +327,12 @@ class TreasuryCheckScript {
             exUnitsMint
         );
 
+        const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(checkTokenScriptRef);
+
         let mint_witnes = CardanoWasm.MintWitness.new_plutus_script(
-            CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(TreasuryCheckTokenScript.script().hash(), checkTokenScriptRefInput, CardanoWasm.Language.new_plutus_v2())
+            CardanoWasm.PlutusScriptSource.new_ref_input(scriptTmp.hash(), checkTokenScriptRefInput, scriptTmp.language_version(), scriptSize)
             , redeemer);
         const assetName = CardanoWasm.AssetName.new(Buffer.from(TreasuryCheckTokenScript.tokenName()));
-        console.log(assetName.to_json());
         mintBuilder.add_asset(mint_witnes, assetName, CardanoWasm.Int.from_str('-' + (utxosSpend.length)));
         txBuilder.set_mint_builder(mintBuilder);
 
@@ -339,8 +345,8 @@ class TreasuryCheckScript {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             // totalInputValue = totalInputValue.checked_add(value);
-            // txBuilder.add_input(from, input, value);
-            txInputBuilder.add_input(from, input, value);
+            // txBuilder.add_regular_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
         }
 
         for (let i = 0; i < utxosSpend.length; i++) {
@@ -367,12 +373,11 @@ class TreasuryCheckScript {
             const redeemer = CardanoWasm.Redeemer.new(CardanoWasm.RedeemerTag.new_spend(), CardanoWasm.BigNum.from_str('0'), redeemerData, exUnits);
 
             const scriptHash = utils.addressToPkhOrScriptHash(utxo.address);
-            // const witness = CardanoWasm.PlutusWitness.new_with_ref(CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-            //     CardanoWasm.ScriptHash.from_hex(scriptHash), scriptRefInput, CardanoWasm.Language.new_plutus_v2())
-            //     , CardanoWasm.DatumSource.new_ref_input(input)
-            //     , redeemer);
+
+            const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(scriptRef);
+
             const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(
-                CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(CardanoWasm.ScriptHash.from_hex(scriptHash), scriptRefInput, CardanoWasm.Language.new_plutus_v2())
+                CardanoWasm.PlutusScriptSource.new_ref_input(CardanoWasm.ScriptHash.from_hex(scriptHash), scriptRefInput, scriptTmp.language_version(), scriptSize)
                 , redeemer
             )
 
@@ -397,7 +402,7 @@ class TreasuryCheckScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
@@ -448,17 +453,17 @@ class TreasuryScript {
 
         if (stake_cred) {
             return CardanoWasm.BaseAddress.new(Network_Id
-                , CardanoWasm.StakeCredential.from_scripthash(TreasuryScript.script().hash())
-                , CardanoWasm.StakeCredential.from_scripthash(CardanoWasm.ScriptHash.from_hex(stake_cred))).to_address();
+                , CardanoWasm.Credential.from_scripthash(TreasuryScript.script().hash())
+                , CardanoWasm.Credential.from_scripthash(CardanoWasm.ScriptHash.from_hex(stake_cred))).to_address();
         } else {
-            return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.StakeCredential.from_scripthash(TreasuryScript.script().hash())).to_address();
+            return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.Credential.from_scripthash(TreasuryScript.script().hash())).to_address();
         }
     }
 
     // static full_address(network_id = 0,stake_cred){
     //     // const stake_cred = ''
     //     return CardanoWasm.BaseAddress.new(network_id
-    //         , CardanoWasm.StakeCredential.from_scripthash(treasuryScript.hash())
+    //         , CardanoWasm.Credential.from_scripthash(treasuryScript.hash())
     //         , stake_cred).to_address();
     // }
 
@@ -474,7 +479,7 @@ class TreasuryScript {
             const value = utils.funValue(utxoForFee.value);
             // console.log(value.to_json());
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
-            txInputBuilder.add_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
         }
 
         let perValue = { coins: funValue.coins / outputCount, assets: {} };
@@ -538,12 +543,10 @@ class TreasuryScript {
         return signedTx;
     }
     static caculateRedeemDataHash(redeemData) {
-
-        const padding = function (str) {
-            let paddingLength = Math.ceil(str.length / 2) * 2 - str.length;
-            if (paddingLength <= 0) return str;
-            else return '0' + str;
-        }
+        // Builds CBOR-serialized ConstrPlutusData with 14 fields matching
+        // TreasuryCheckHashData in types.ak / TreasuryCheckProofHashData in TreasuryCheck.hs.
+        // This replaces the old hex-string concatenation approach which had no
+        // field delimiters and was vulnerable to boundary-ambiguity attacks.
 
         const { pkhPay, pkhStk } = utils.addressToHashs(redeemData.to);
 
@@ -551,30 +554,41 @@ class TreasuryScript {
         if (redeemData.tokenId != '') {
             [policy_id, tokenName] = redeemData.tokenId.split('.');
         }
-        const amount = padding(new BigNumber(redeemData.amount).toString(16));//CardanoWasm.BigInt.from_str(redeemData.amount + '').to_hex();
-        const adaAmount = padding(new BigNumber(redeemData.adaAmount).toString(16));//CardanoWasm.BigInt.from_str(redeemData.adaAmount + '').to_hex();
-        const nonceHash = redeemData.txHash;
-        const nonceIndex = padding(new BigNumber(redeemData.index).toString(16));//CardanoWasm.BigInt.from_str(redeemData.nonce.index + '').to_hex();;
-        const mode = padding(new BigNumber(redeemData.mode).toString(16));
-        const txType = padding(new BigNumber(redeemData.txType).toString(16));
-        const ttl = padding(new BigNumber(redeemData.ttl).toString(16));
-        const outputCount = padding(new BigNumber(redeemData.outputCount).toString(16));
 
         const addressType = utils.addressType(redeemData.to);
         let userData = '';
-        if (addressType == CardanoWasm.StakeCredKind.Script) {
+        if (addressType == CardanoWasm.CredKind.Script) {
             if (redeemData.userData === undefined) throw 'userData required in caculateRedeemDataHash()';
             userData = Buffer.from(redeemData.userData, 'hex').toString('hex');//Just check useData don't have prefix '0x'
         }
 
-        const rawData = pkhPay + (pkhStk ? pkhStk : '') + policy_id + tokenName + amount + adaAmount + nonceHash + nonceIndex + mode + redeemData.uniqueId + txType + ttl + outputCount + userData;
+        // Build PlutusData Constr 0 with 14 fields in canonical order
+        const fields = CardanoWasm.PlutusList.new();
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(pkhPay, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(pkhStk ? pkhStk : '', 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(policy_id, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(tokenName, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.amount + '')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.adaAmount + '')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(redeemData.txHash, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.index + '')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.mode + '')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(redeemData.uniqueId, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.txType + '')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.ttl + '')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.outputCount + '')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(userData, 'hex')));
+
+        const constrData = CardanoWasm.ConstrPlutusData.new(
+            CardanoWasm.BigNum.from_str('0'),
+            fields
+        );
+        const hashCBOR = CardanoWasm.PlutusData.new_constr_plutus_data(constrData).to_hex();
 
         const shaObj = new jsSHA("SHA3-256", "UINT8ARRAY"/*,{encoding:"UTF8"}*/)
-        shaObj.update(Buffer.from(rawData, 'hex'));
+        shaObj.update(Buffer.from(hashCBOR, 'hex'));
         const dataHash = shaObj.getHash("HEX");
 
-        // const { signature } = await signFn(dataHash);
-        // return { ...redeemData, signature, hash: dataHash };
         return dataHash;
     }
 
@@ -587,6 +601,7 @@ class TreasuryScript {
 
     static getTreasuryRedeemerFromCBOR(redeemerHex) {
         const redeemer = CardanoWasm.PlutusData.from_hex(redeemerHex);
+        const ls = redeemer.as_constr_plutus_data().data();
 
 
         if (ls.len() == 2) {
@@ -608,6 +623,7 @@ class TreasuryScript {
             const txType = parmsLs.get(10).as_integer().as_int().as_i32();
             const ttl = parmsLs.get(11).as_integer().as_int().as_i32();
             const outputCount = parmsLs.get(12).as_integer().as_int().as_i32();
+            const signature = Buffer.from(parmsLs.get(13).as_bytes()).toString('hex');
 
             return { toPKHPay, toPKHStk, tokenId, adaAmount, amount, txHash, index, mode, uniqueId, txType, ttl, outputCount, userData, signature };
         } else {
@@ -626,6 +642,7 @@ class TreasuryScript {
             const txType = parmsLs.get(10).as_integer().as_int().as_i32();
             const ttl = parmsLs.get(11).as_integer().as_int().as_i32();
             const outputCount = parmsLs.get(12).as_integer().as_int().as_i32();
+            const signature = Buffer.from(parmsLs.get(13).as_bytes()).toString('hex');
 
             return { toPKHPay, toPKHStk, tokenId, adaAmount, amount, txHash, index, mode, uniqueId, txType, ttl, outputCount, signature };
         }
@@ -697,7 +714,8 @@ class TreasuryScript {
 
 
         const addressType = utils.addressType(proof.to);
-        if (addressType == CardanoWasm.StakeCredKind.Script) {
+        //to is is a contract address and not treasury address
+        if (addressType == CardanoWasm.CredKind.Script && proof.userData) {
             const lastls = CardanoWasm.PlutusList.new();
             if (proof.userData === undefined) throw 'userData required';
             const proofPart = CardanoWasm.PlutusData.new_constr_plutus_data(
@@ -730,7 +748,7 @@ class TreasuryScript {
 
         let action = '1';
         const addressType = utils.addressType(proof.to);
-        if (addressType == CardanoWasm.StakeCredKind.Script) {
+        if (addressType == CardanoWasm.CredKind.Script) {
             action = '2';
         }
         return CardanoWasm.PlutusData.new_constr_plutus_data(
@@ -744,7 +762,7 @@ class TreasuryScript {
     static async transferFromTreasury(protocolParams, utxosForFee, utxosToSpend, scriptRefUtxo, groupNFTUtxo, funValue, toAddr, redeemProof, utxoForCollateral, treasuryCheckUxto, treasuryCheckRef, changeAddress, evaluateTxFn, signFn, rawMetaData, ttl) {
         const signedTx = await TreasuryScript.transferFromTreasuryWithoutEvaluate(protocolParams, utxosForFee, utxosToSpend, scriptRefUtxo, groupNFTUtxo, funValue, toAddr, redeemProof, utxoForCollateral, treasuryCheckUxto, treasuryCheckRef, changeAddress, signFn, rawMetaData, ttl);
         // return signedTx;
-        console.log(signedTx.to_json());
+        // console.log(signedTx.to_json());
         const exUnitEVA = await evaluateTxFn(signedTx.to_hex());
         if (!exUnitEVA) throw 'evaluate failed';
         let total_ex_mem = 0;
@@ -774,7 +792,7 @@ class TreasuryScript {
             // const value = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(utxoForFee.value + ''));
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
-            txInputBuilder.add_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
             inputs_arr.push(utxoForFee.txHash + '#' + utxoForFee.index);
         }
 
@@ -788,7 +806,7 @@ class TreasuryScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
@@ -813,7 +831,7 @@ class TreasuryScript {
         const treasuryCheckScriptHash = CardanoWasm.ScriptHash.from_hex(utils.addressToPkhOrScriptHash(treasuryCheckUxto.address));
         {
             const utxoToSpend = treasuryCheckUxto;
-            // txBuilder.add_script_input
+
             const txId = CardanoWasm.TransactionHash.from_bytes(Buffer.from(utxoToSpend.txHash, 'hex'));
             const input = CardanoWasm.TransactionInput.new(txId, utxoToSpend.index);
             // const value = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(utxoToSpend.value + ''));
@@ -832,9 +850,10 @@ class TreasuryScript {
 
             const redeemer = CardanoWasm.Redeemer.new(CardanoWasm.RedeemerTag.new_spend(), CardanoWasm.BigNum.from_str('0'), redeemerData, exUnits);
 
-            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-                treasuryCheckScriptHash, authorityCheckRefenceInput, CardanoWasm.Language.new_plutus_v2())
-                // , CardanoWasm.DatumSource.new_ref_input(input)
+            const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(treasuryCheckRef);
+
+            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input(
+                treasuryCheckScriptHash, authorityCheckRefenceInput, scriptTmp.language_version(), scriptSize)
                 , redeemer);
 
             txInputBuilder.add_plutus_script_input(witness, input, value);
@@ -877,19 +896,19 @@ class TreasuryScript {
                 exUnits
             );
 
-            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-                TreasuryScript.script().hash(), refenceInput, CardanoWasm.Language.new_plutus_v2())
-                // , CardanoWasm.DatumSource.new_ref_input(input)
-                // , CardanoWasm.DatumSource.new(datum42)
+            const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(scriptRefUtxo);
+
+            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input(
+                scriptTmp.hash(), refenceInput, scriptTmp.language_version(), scriptSize)
                 , redeemer);
             // const witness = CardanoWasm.PlutusWitness.new(TreasuryScript.script(),datum42,redeemer);
             txInputBuilder.add_plutus_script_input(witness, input, value);
-            spendInputs.add_input(from, input, value);
+            spendInputs.add_plutus_script_input(witness, input, value);
         }
 
         txBuilder.set_inputs(txInputBuilder);
 
-        let transferValue = { coins: redeemProof.adaAmount, assets: redeemProof.tokenId ? { [redeemProof.tokenId]: redeemProof.amount } : {} };
+        let transferValue = { coins: redeemProof.adaAmount*1 , assets: redeemProof.tokenId ? { [redeemProof.tokenId]: redeemProof.amount } : {} };
         if (redeemProof.txType === TreasuryScript.BALANCETX) {
             transferValue = { coins: 0, assets: redeemProof.tokenId ? { [redeemProof.tokenId]: 0 } : {} }
         }
@@ -899,8 +918,14 @@ class TreasuryScript {
 
         // console.log(outputValue.to_json());
         // const fakeValue = outputValue.checked_add(CardanoWasm.Value.new(CardanoWasm.BigNum.from_str('1')));
-        let output = CardanoWasm.TransactionOutput.new(CardanoWasm.Address.from_bech32(toAddr), outputValue);
-        if (utils.addressType(toAddr) == CardanoWasm.StakeCredKind.Script) {
+        let output;
+        if(redeemProof.additionalAda){
+            const addtionalValue = { coins: redeemProof.adaAmount*1 + redeemProof.additionalAda*1, assets: redeemProof.tokenId ? { [redeemProof.tokenId]: redeemProof.amount } : {} }
+            output = CardanoWasm.TransactionOutput.new(CardanoWasm.Address.from_bech32(toAddr), utils.funValue(addtionalValue));
+        }else{
+            output = CardanoWasm.TransactionOutput.new(CardanoWasm.Address.from_bech32(toAddr), outputValue);
+        }
+        if (utils.addressType(toAddr) == CardanoWasm.CredKind.Script) {
             output.set_plutus_data(CardanoWasm.PlutusData.from_hex(redeemProof.userData));
         }
         // console.log('To:', CardanoWasm.BaseAddress.from_address(CardanoWasm.Address.from_bech32(toAddr)).payment_cred().to_keyhash().to_hex())//72ebc8498ce173916e5d819725f33dac499a0ce9f5e82f2dcef88876
@@ -914,6 +939,8 @@ class TreasuryScript {
         } else {
             valueOutputOfTreasury = spendInputs.total_value().checked_sub(outputValue);
         }
+
+        // console.log(valueOutputOfTreasury.total_value().to_json())
 
         // console.log('valueChangeOfTreasuryScript=', valueOutputOfTreasury.to_json());
 
@@ -1029,7 +1056,7 @@ class TreasuryScript {
 
 
 
-        // txBuilder.add_required_signer(CardanoWasm.Ed25519KeyHash.from_hex(groupInfo[contractMgr.GroupNFT.BalanceWorker]));
+        txBuilder.add_required_signer(CardanoWasm.Ed25519KeyHash.from_hex(groupInfo[contractMgr.GroupNFT.BalanceWorker]));
 
         const minFee = txBuilder.min_fee();
         // console.log('minFee:', minFee.to_str());
@@ -1085,7 +1112,7 @@ class TreasuryScript {
             // const value = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(utxoForFee.value + ''));
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
-            txInputBuilder.add_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
             inputs_arr.push(utxoForFee.txHash + '#' + utxoForFee.index);
         }
 
@@ -1099,7 +1126,7 @@ class TreasuryScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
@@ -1126,7 +1153,7 @@ class TreasuryScript {
         const treasuryCheckScriptHash = CardanoWasm.ScriptHash.from_hex(utils.addressToPkhOrScriptHash(treasuryCheckUxto.address));
         {
             const utxoToSpend = treasuryCheckUxto;
-            // txBuilder.add_script_input
+
             const txId = CardanoWasm.TransactionHash.from_bytes(Buffer.from(utxoToSpend.txHash, 'hex'));
             const input = CardanoWasm.TransactionInput.new(txId, utxoToSpend.index);
             // const value = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(utxoToSpend.value + ''));
@@ -1145,9 +1172,10 @@ class TreasuryScript {
 
             const redeemer = CardanoWasm.Redeemer.new(CardanoWasm.RedeemerTag.new_spend(), CardanoWasm.BigNum.from_str('0'), redeemerData, exUnits);
 
-            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-                treasuryCheckScriptHash, authorityCheckRefenceInput, CardanoWasm.Language.new_plutus_v2())
-                // , CardanoWasm.DatumSource.new_ref_input(input)
+
+            const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(treasuryCheckRef);
+            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input(
+                treasuryCheckScriptHash, authorityCheckRefenceInput, scriptTmp.language_version(), scriptSize)
                 , redeemer);
 
             txInputBuilder.add_plutus_script_input(witness, input, value);
@@ -1172,19 +1200,9 @@ class TreasuryScript {
             // const value = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(utxoToSpend.value + ''));
             const value = utils.funValue(utxoToSpend.value);
             const from = CardanoWasm.Address.from_bech32(utxoToSpend.address);
-            let ex_unit_mem = 796508;//EX_UINT_MEM_ONLY_ONE; 2211410
-            let ex_unit_cpu = 56477634;//EX_UINT_CPU_ONLY_ONE; 663013608
-            // if (utxosToSpend.length > 1) {
-            //     const offset = inputs_arr.indexOf(utxoToSpend.txHash + '#' + utxoToSpend.index)
-            //     if (i == utxosToSpend.length - 1) {
-            //         ex_unit_mem = EX_UINT_MEM_LAST_OF_TWO + EX_UINT_MEM_AUGMENTER_BETWEEN_LAST * (utxosToSpend.length - 2);
-            //         ex_unit_cpu = EX_UINT_CPU_LAST_OF_TWO + EX_UINT_CPU_AUGMENTER_BETWEEN_LAST * (utxosToSpend.length - 2);
-            //     } else {
-            //         ex_unit_mem = EX_UINT_MEM_FIRST_OF_TWO + EX_UINT_MEM_AUGMENTER_BETWEEN_FIRST * (utxosToSpend.length - 2) + EX_UINT_MEM_AUGMENTER_BETWEEN_PRE_NEXT * offset;
-            //         ex_unit_cpu = EX_UINT_CPU_FIRST_OF_TWO + EX_UINT_CPU_AUGMENTER_BETWEEN_FIRST * (utxosToSpend.length - 2) + EX_UINT_CPU_AUGMENTER_BETWEEN_PRE_NEXT * offset;
-            //     }
-            // }
-            // console.log('mem:', ex_unit_mem, 'cpu:', ex_unit_cpu);
+            let ex_unit_mem = 2211410;//EX_UINT_MEM_ONLY_ONE; 2211410
+            let ex_unit_cpu = 66477634;//EX_UINT_CPU_ONLY_ONE; 663013608
+
             const exUnits = CardanoWasm.ExUnits.new(
                 CardanoWasm.BigNum.from_str((ex_unit_mem) + ''),//(EX_UNIT_A),2738702
                 CardanoWasm.BigNum.from_str((ex_unit_cpu) + '')//(EX_UNIT_B)727869902 702471775
@@ -1200,14 +1218,13 @@ class TreasuryScript {
                 exUnits
             );
 
-            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-                TreasuryScript.script().hash(), refenceInput, CardanoWasm.Language.new_plutus_v2())
-                // , CardanoWasm.DatumSource.new_ref_input(input)
-                // , CardanoWasm.DatumSource.new(datum42)
+            const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(scriptRefUtxo);
+            const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(CardanoWasm.PlutusScriptSource.new_ref_input(
+                scriptTmp.hash(), refenceInput, scriptTmp.language_version(), scriptSize)
                 , redeemer);
             // const witness = CardanoWasm.PlutusWitness.new(TreasuryScript.script(),datum42,redeemer);
             txInputBuilder.add_plutus_script_input(witness, input, value);
-            spendInputs.add_input(from, input, value);
+            spendInputs.add_plutus_script_input(witness, input, value);
         }
         // console.log('total_mem:', total_ex_mem, 'total_cpu:', total_ex_cpu);
         txBuilder.set_inputs(txInputBuilder);
@@ -1222,8 +1239,15 @@ class TreasuryScript {
 
         // console.log(outputValue.to_json());
         // const fakeValue = outputValue.checked_add(CardanoWasm.Value.new(CardanoWasm.BigNum.from_str('1')));
-        let output = CardanoWasm.TransactionOutput.new(CardanoWasm.Address.from_bech32(toAddr), outputValue);
-        if (utils.addressType(toAddr) == CardanoWasm.StakeCredKind.Script) {
+        // let output = CardanoWasm.TransactionOutput.new(CardanoWasm.Address.from_bech32(toAddr), outputValue);
+        let output;
+        if(redeemProof.additionalAda){
+            const addtionalValue = { coins: redeemProof.adaAmount*1 + redeemProof.additionalAda*1, assets: redeemProof.tokenId ? { [redeemProof.tokenId]: redeemProof.amount } : {} }
+            output = CardanoWasm.TransactionOutput.new(CardanoWasm.Address.from_bech32(toAddr), utils.funValue(addtionalValue));
+        }else{
+            output = CardanoWasm.TransactionOutput.new(CardanoWasm.Address.from_bech32(toAddr), outputValue);
+        }
+        if (utils.addressType(toAddr) == CardanoWasm.CredKind.Script) {
             output.set_plutus_data(CardanoWasm.PlutusData.from_hex(redeemProof.userData));
         }
         // console.log('To:', CardanoWasm.BaseAddress.from_address(CardanoWasm.Address.from_bech32(toAddr)).payment_cred().to_keyhash().to_hex())//72ebc8498ce173916e5d819725f33dac499a0ce9f5e82f2dcef88876
@@ -1239,7 +1263,7 @@ class TreasuryScript {
             valueOutputOfTreasury = spendInputs.total_value().checked_sub(outputValue);
         }
 
-        // console.log('valueChangeOfTreasuryScript=', valueOutputOfTreasury.to_json());
+        // console.log('valueOutputOfTreasury=', valueOutputOfTreasury.to_json());
 
         let changeValuePerUtxo;
         let changeValueLastUtxo;
@@ -1352,7 +1376,7 @@ class TreasuryScript {
 
 
 
-        // txBuilder.add_required_signer(CardanoWasm.Ed25519KeyHash.from_hex(groupInfo[contractMgr.GroupNFT.BalanceWorker]));
+        txBuilder.add_required_signer(CardanoWasm.Ed25519KeyHash.from_hex(groupInfo[contractMgr.GroupNFT.BalanceWorker]));
 
         const minFee = txBuilder.min_fee();
         // console.log('minFee:', minFee.to_str());
@@ -1440,7 +1464,7 @@ class MappingTokenScript {
     //     txBuilder.set_auxiliary_data(auxiliaryData);
     // }
 
-    static async burn(protocolParams, utxosForFee, utxoForCollateral, scriptRef, utxosToBurn, tokenId, burnedAmount, changeAddress, signFn, ttl, rawMetaData) {
+    static async burn(protocolParams, utxosForFee, utxoForCollateral, scriptRef, utxosToBurn, tokenId, burnedAmount, changeAddress, evaluateTxFn, signFn, ttl, rawMetaData) {
         const txBuilder = utils.initTxBuilder(protocolParams);
 
         for (let i = 0; i < utxosForFee.length; i++) {
@@ -1451,7 +1475,7 @@ class MappingTokenScript {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             // totalInputValue = totalInputValue.checked_add(value);
-            txBuilder.add_input(from, input, value);
+            txBuilder.add_regular_input(from, input, value);
         }
 
         for (let i = 0; i < utxosToBurn.length; i++) {
@@ -1462,7 +1486,7 @@ class MappingTokenScript {
             const value = utils.funValue(utxoBurn.value);
             const from = CardanoWasm.Address.from_bech32(utxoBurn.address);
             // totalInputValue = totalInputValue.checked_add(value);
-            txBuilder.add_input(from, input, value);
+            txBuilder.add_regular_input(from, input, value);
         }
 
         //step2: construct mint
@@ -1471,12 +1495,14 @@ class MappingTokenScript {
             CardanoWasm.TransactionHash.from_hex(scriptRef.txHash)
             , scriptRef.index
         );
-        const mint_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(MappingTokenScript.script().hash()
-            , scriptRefInput, CardanoWasm.Language.new_plutus_v2());
+
+        const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(scriptRef);
+        const mint_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input(scriptTmp.hash()
+            , scriptRefInput, scriptTmp.language_version(), scriptSize);
 
         const exUnitsMint = CardanoWasm.ExUnits.new(
-            CardanoWasm.BigNum.from_str((2166688) + ''),//(EX_UNIT_A),//TODO----->903197
-            CardanoWasm.BigNum.from_str((589206509) + '')//(EX_UNIT_B)306405352
+            CardanoWasm.BigNum.from_str((2667720) + ''),//(EX_UNIT_A),//TODO----->903197
+            CardanoWasm.BigNum.from_str((539630005) + '')//(EX_UNIT_B)306405352
         );
 
         const mintRedeemer = CardanoWasm.Redeemer.new(
@@ -1503,7 +1529,7 @@ class MappingTokenScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
 
 
@@ -1524,6 +1550,8 @@ class MappingTokenScript {
         txBuilder.add_change_if_needed(CardanoWasm.Address.from_bech32(changeAddress));
 
         let tx = txBuilder.build_tx();
+
+
         const body = tx.body();
         // console.log('real_fee:', body.fee().to_str());
         const txHash = CardanoWasm.hash_transaction(body);
@@ -1541,7 +1569,7 @@ class MappingTokenScript {
 
     static async mintWithoutEvaluate(protocolParams, utxosForFee, utxoForCollateral, scriptRef, mintCheckScriptRef, groupNFTUtxo, mintCheckUtxo, redeemProof, changeAddress, signFn, ttl, rawMetaData) {
         const txBuilder = utils.initTxBuilder(protocolParams);
-
+        const groupInfo = contractMgr.GroupNFT.groupInfoFromDatum(groupNFTUtxo.datum);
         for (let i = 0; i < utxosForFee.length; i++) {
             const utxoForFee = utxosForFee[i];
             const txId = CardanoWasm.TransactionHash.from_bytes(Buffer.from(utxoForFee.txHash, 'hex'));
@@ -1550,7 +1578,7 @@ class MappingTokenScript {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             // totalInputValue = totalInputValue.checked_add(value);
-            txBuilder.add_input(from, input, value);
+            txBuilder.add_regular_input(from, input, value);
         }
 
         //step2: construct mint
@@ -1559,8 +1587,10 @@ class MappingTokenScript {
             CardanoWasm.TransactionHash.from_hex(scriptRef.txHash)
             , scriptRef.index
         );
-        const mint_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(MappingTokenScript.script().hash()
-            , scriptRefInput, CardanoWasm.Language.new_plutus_v2());
+
+        const { script: scriptTmp2, scriptSize: scriptSize2 } = utils.plutusScriptFromScriptRef(scriptRef);
+        const mint_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input(scriptTmp2.hash()
+            , scriptRefInput, scriptTmp2.language_version(), scriptSize2);
 
         const exUnitsMint = CardanoWasm.ExUnits.new(
             CardanoWasm.BigNum.from_str((2536910) + ''),//(EX_UNIT_A),//TODO----->903197
@@ -1588,7 +1618,10 @@ class MappingTokenScript {
         const mintCheckInput = CardanoWasm.TransactionInput.new(CardanoWasm.TransactionHash.from_hex(mintCheckUtxo.txHash), mintCheckUtxo.index);
 
         const mintCheckScriptHash = CardanoWasm.ScriptHash.from_hex(utils.addressToPkhOrScriptHash(mintCheckUtxo.address));
-        const mint_check_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(mintCheckScriptHash, mintCheckRefInput, CardanoWasm.Language.new_plutus_v2());
+
+        const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(mintCheckScriptRef);
+
+        const mint_check_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input(mintCheckScriptHash, mintCheckRefInput, scriptTmp.language_version(), scriptSize);
         const exUnitsSpendMintCheck = CardanoWasm.ExUnits.new(CardanoWasm.BigNum.from_str((4433118) + ''), CardanoWasm.BigNum.from_str((1416265282) + ''));
         const redeemerData = MintCheckScript.redeemProof(redeemProof);
         const redeemer = CardanoWasm.Redeemer.new(
@@ -1597,6 +1630,7 @@ class MappingTokenScript {
             redeemerData,
             exUnitsSpendMintCheck
         );
+
         const mintCheckWitness = CardanoWasm.PlutusWitness.new_with_ref(mint_check_plutus_script_source
             , CardanoWasm.DatumSource.new_ref_input(mintCheckInput)
             , redeemer)
@@ -1613,20 +1647,22 @@ class MappingTokenScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
 
-        const params = contractMgr.GroupNFT.groupInfoFromDatum(groupNFTUtxo.datum);
+        // const params = contractMgr.GroupNFT.groupInfoFromDatum(groupNFTUtxo.datum);
         // const requiredSigner = params[contractMgr.GroupNFT.BalanceWorker];
 
 
         const toAddr = CardanoWasm.Address.from_bech32(redeemProof.to);
         const scriptHash = MappingTokenScript.script().hash();
         let testDatum;
-        if (utils.addressType(redeemProof.to) == CardanoWasm.StakeCredKind.Script) {
+        if (utils.addressType(redeemProof.to) == CardanoWasm.CredKind.Script) {
             testDatum = CardanoWasm.PlutusData.from_hex(redeemProof.userData);
         }
-        const minAdaWithMintToken = utils.getMinAdaOfUtxo(protocolParams, toAddr, { coins: 1000000, assets: { [redeemProof.tokenId]: redeemProof.amount } }, testDatum);
+        // const minAdaWithMintToken = utils.getMinAdaOfUtxo(protocolParams, toAddr, { coins: 1000000, assets: { [redeemProof.tokenId]: redeemProof.amount } }, testDatum) + (redeemProof.additionalAda?redeemProof.additionalAda*1:0);
+        let minAdaWithMintToken = utils.getMinAdaOfUtxo(protocolParams, toAddr, { coins: 1000000, assets: { [redeemProof.tokenId]: redeemProof.amount } }, testDatum);
+        minAdaWithMintToken = minAdaWithMintToken*1 > (redeemProof.additionalAda?redeemProof.additionalAda*1:0)? minAdaWithMintToken*1 : redeemProof.additionalAda*1;
         const mutiAsset = CardanoWasm.MultiAsset.new();
         const asset = CardanoWasm.Assets.new();
         asset.insert(assetName, CardanoWasm.BigNum.from_str('' + redeemProof.amount));
@@ -1634,7 +1670,7 @@ class MappingTokenScript {
         let mintedValue = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str('' + minAdaWithMintToken));
         mintedValue.set_multiasset(mutiAsset);
         const outputOfMint = CardanoWasm.TransactionOutput.new(toAddr, mintedValue);
-        if (utils.addressType(redeemProof.to) == CardanoWasm.StakeCredKind.Script) {
+        if (utils.addressType(redeemProof.to) == CardanoWasm.CredKind.Script) {
             outputOfMint.set_plutus_data(CardanoWasm.PlutusData.from_hex(redeemProof.userData));
         }
 
@@ -1658,7 +1694,7 @@ class MappingTokenScript {
         txBuilder.set_mint_builder(mintBuilder);
         txBuilder.add_reference_input(groupNFTRefInput);
         txBuilder.add_plutus_script_input(mintCheckWitness, mintCheckInput, utils.funValue(mintCheckUtxo.value));
-        // txBuilder.add_required_signer(CardanoWasm.Ed25519KeyHash.from_hex(requiredSigner));
+        txBuilder.add_required_signer(CardanoWasm.Ed25519KeyHash.from_hex(groupInfo[contractMgr.GroupNFT.BalanceWorker]));
         txBuilder.add_output(outputOfMint);
         txBuilder.add_output(outputMintCheckChange);
 
@@ -1695,9 +1731,9 @@ class MappingTokenScript {
     static async mint(protocolParams, utxosForFee, utxoForCollateral, scriptRef, mintCheckScriptRef, groupNFTUtxo, mintCheckUtxo, redeemProof, changeAddress, evaluateTxFn, signFn, ttl, rawMetaData) {
         const signedTx = await MappingTokenScript.mintWithoutEvaluate(protocolParams, utxosForFee, utxoForCollateral, scriptRef, mintCheckScriptRef, groupNFTUtxo, mintCheckUtxo, redeemProof, changeAddress, signFn, ttl, rawMetaData);
         // return signedTx;
-        console.log(signedTx.to_json())
         const exUnitEVA = await evaluateTxFn(signedTx.to_hex());
         if (!exUnitEVA) throw 'evaluate failed';
+        const groupInfo = contractMgr.GroupNFT.groupInfoFromDatum(groupNFTUtxo.datum);
         let total_ex_mem = 0;
         let total_ex_cpu = 0;
         const gasMutipl = 1;
@@ -1723,7 +1759,7 @@ class MappingTokenScript {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             // totalInputValue = totalInputValue.checked_add(value);
-            txBuilder.add_input(from, input, value);
+            txBuilder.add_regular_input(from, input, value);
             inputs_arr.push(utxoForFee.txHash + '#' + utxoForFee.index);
         }
         inputs_arr.push(mintCheckUtxo.txHash + '#' + mintCheckUtxo.index);
@@ -1735,8 +1771,11 @@ class MappingTokenScript {
             CardanoWasm.TransactionHash.from_hex(scriptRef.txHash)
             , scriptRef.index
         );
-        const mint_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(MappingTokenScript.script().hash()
-            , scriptRefInput, CardanoWasm.Language.new_plutus_v2());
+
+        const { script: scriptTmp2, scriptSize: scriptSize2 } = utils.plutusScriptFromScriptRef(scriptRef);
+
+        const mint_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input(scriptTmp2.hash()
+            , scriptRefInput,scriptTmp2.language_version(), scriptSize2);
 
         let ex_unit_mem = Math.floor(exUnitEVA['mint:0'].memory * gasMutipl);//7575293;//  4142333
         let ex_unit_cpu = Math.floor(exUnitEVA['mint:0'].steps * gasMutipl);//2880092692; 1447050275
@@ -1767,7 +1806,10 @@ class MappingTokenScript {
         const mintCheckInput = CardanoWasm.TransactionInput.new(CardanoWasm.TransactionHash.from_hex(mintCheckUtxo.txHash), mintCheckUtxo.index);
 
         const mintCheckScriptHash = CardanoWasm.ScriptHash.from_hex(utils.addressToPkhOrScriptHash(mintCheckUtxo.address));
-        const mint_check_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(mintCheckScriptHash, mintCheckRefInput, CardanoWasm.Language.new_plutus_v2());
+
+        const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(mintCheckScriptRef);
+
+        const mint_check_plutus_script_source = CardanoWasm.PlutusScriptSource.new_ref_input(mintCheckScriptHash, mintCheckRefInput, scriptTmp.language_version(), scriptSize);
 
         const index = inputs_arr.indexOf(mintCheckUtxo.txHash + '#' + mintCheckUtxo.index);
         let ex_unit_mem_spend = Math.floor(exUnitEVA['spend:' + index].memory * gasMutipl);//7575293;//  4142333
@@ -1796,25 +1838,27 @@ class MappingTokenScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
 
-        const params = contractMgr.GroupNFT.groupInfoFromDatum(groupNFTUtxo.datum);
+        // const params = contractMgr.GroupNFT.groupInfoFromDatum(groupNFTUtxo.datum);
         // const requiredSigner = params[contractMgr.GroupNFT.BalanceWorker];
+        txBuilder.add_required_signer(CardanoWasm.Ed25519KeyHash.from_hex(groupInfo[contractMgr.GroupNFT.BalanceWorker]));
 
 
         const toAddr = CardanoWasm.Address.from_bech32(redeemProof.to);
         const scriptHash = MappingTokenScript.script().hash();
         let testDatum;
-        if (utils.addressType(redeemProof.to) == CardanoWasm.StakeCredKind.Script) {
+        if (utils.addressType(redeemProof.to) == CardanoWasm.CredKind.Script) {
             testDatum = CardanoWasm.PlutusData.from_hex(redeemProof.userData);
         }
-        const minAdaWithMintToken = utils.getMinAdaOfUtxo(protocolParams, toAddr, { coins: 1000000, assets: { [redeemProof.tokenId]: redeemProof.amount } }, testDatum);
+        let minAdaWithMintToken = utils.getMinAdaOfUtxo(protocolParams, toAddr, { coins: 1000000, assets: { [redeemProof.tokenId]: redeemProof.amount } }, testDatum);
+        minAdaWithMintToken = minAdaWithMintToken*1 > (redeemProof.additionalAda?redeemProof.additionalAda*1:0)? minAdaWithMintToken*1 : redeemProof.additionalAda*1;
         const mutiAsset = CardanoWasm.MultiAsset.new();
         const asset = CardanoWasm.Assets.new();
         asset.insert(assetName, CardanoWasm.BigNum.from_str('' + redeemProof.amount));
         mutiAsset.insert(scriptHash, asset);
-        let mintedValue = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str('' + (minAdaWithMintToken + 0)));
+        let mintedValue = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str('' + (minAdaWithMintToken)));
         // {
         //     const asset = CardanoWasm.Assets.new();
         //     asset.insert(CardanoWasm.AssetName.new(Buffer.from('4164612d57616e','hex')), CardanoWasm.BigNum.from_str('123'));
@@ -1822,7 +1866,7 @@ class MappingTokenScript {
         // }
         mintedValue.set_multiasset(mutiAsset);
         const outputOfMint = CardanoWasm.TransactionOutput.new(toAddr, mintedValue);
-        if (utils.addressType(redeemProof.to) == CardanoWasm.StakeCredKind.Script) {
+        if (utils.addressType(redeemProof.to) == CardanoWasm.CredKind.Script) {
             outputOfMint.set_plutus_data(CardanoWasm.PlutusData.from_hex(redeemProof.userData));
         }
 
@@ -1888,25 +1932,24 @@ class MintCheckScript {
 
     // static address() {
 
-    //     return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.StakeCredential.from_scripthash(this.script().hash())).to_address();
+    //     return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.Credential.from_scripthash(this.script().hash())).to_address();
     // }
     static address(stake_cred = undefined) {
 
         if (stake_cred) {
             return CardanoWasm.BaseAddress.new(Network_Id
-                , CardanoWasm.StakeCredential.from_scripthash(this.script().hash())
-                , CardanoWasm.StakeCredential.from_scripthash(CardanoWasm.ScriptHash.from_hex(stake_cred))).to_address();
+                , CardanoWasm.Credential.from_scripthash(this.script().hash())
+                , CardanoWasm.Credential.from_scripthash(CardanoWasm.ScriptHash.from_hex(stake_cred))).to_address();
         } else {
-            return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.StakeCredential.from_scripthash(this.script().hash())).to_address();
+            return CardanoWasm.EnterpriseAddress.new(Network_Id, CardanoWasm.Credential.from_scripthash(this.script().hash())).to_address();
         }
     }
 
     static caculateRedeemDataHash(redeemData) {
-        const padding = function (str) {
-            let paddingLength = Math.ceil(str.length / 2) * 2 - str.length;
-            if (paddingLength <= 0) return str;
-            else return '0' + str;
-        }
+        // Builds CBOR-serialized ConstrPlutusData with 11 fields matching
+        // MintCheckHashData in types.ak / MintCheckProofHashData in MintCheck.hs.
+        // This replaces the old hex-string concatenation approach which had no
+        // field delimiters and was vulnerable to boundary-ambiguity attacks.
 
         const { pkhPay, pkhStk } = utils.addressToHashs(redeemData.to);
 
@@ -1914,38 +1957,48 @@ class MintCheckScript {
         if (redeemData.tokenId != '') {
             [policy_id, tokenName] = redeemData.tokenId.split('.');
         }
-        const amount = padding(new BigNumber(redeemData.amount).toString(16));//CardanoWasm.BigInt.from_str(redeemData.amount + '').to_hex();
-        // const adaAmount = padding(new BigNumber(redeemData.adaAmount).toString(16));//CardanoWasm.BigInt.from_str(redeemData.adaAmount + '').to_hex();
-        const nonceHash = redeemData.txHash;
-        const nonceIndex = padding(new BigNumber(redeemData.index).toString(16));//CardanoWasm.BigInt.from_str(redeemData.nonce.index + '').to_hex();;
-        const mode = padding(new BigNumber(redeemData.mode).toString(16));
-        const ttl = padding(new BigNumber(redeemData.ttl).toString(16));
 
         let userData = '';
         const addressType = utils.addressType(redeemData.to);
-        if (addressType == CardanoWasm.StakeCredKind.Script) {
+        if (addressType == CardanoWasm.CredKind.Script) {
             if (redeemData.userData === undefined) throw 'userData required in caculateRedeemDataHash()';
             userData = Buffer.from(redeemData.userData, 'hex').toString('hex');//Just check useData don't have prefix '0x'
         }
-        const rawData = pkhPay + pkhStk + policy_id + tokenName + amount + nonceHash + nonceIndex + mode + redeemData.uniqueId + ttl + userData;
+
+        // Build PlutusData Constr 0 with 11 fields in canonical order
+        const fields = CardanoWasm.PlutusList.new();
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(pkhPay, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(pkhStk ? pkhStk : '', 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(policy_id, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(tokenName, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.amount + '')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(redeemData.txHash, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.index + '')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.mode + '')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(redeemData.uniqueId, 'hex')));
+        fields.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(redeemData.ttl + '')));
+        fields.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(userData, 'hex')));
+
+        const constrData = CardanoWasm.ConstrPlutusData.new(
+            CardanoWasm.BigNum.from_str('0'),
+            fields
+        );
+        const hashCBOR = CardanoWasm.PlutusData.new_constr_plutus_data(constrData).to_hex();
 
         const shaObj = new jsSHA("SHA3-256", "UINT8ARRAY"/*,{encoding:"UTF8"}*/)
-        shaObj.update(Buffer.from(rawData, 'hex'));
+        shaObj.update(Buffer.from(hashCBOR, 'hex'));
         const dataHash = shaObj.getHash("HEX");
 
-        // const { signature } = await signFn(dataHash);
-        // return { ...redeemData, signature, hash: dataHash };
         return dataHash;
     }
 
     static redeemProof(proof) {//{"constructor":0,"fields":[]}
-
         const ls = CardanoWasm.PlutusList.new();
         ls.add(this.mintRedeemProof(proof))
 
         let action = '1';
         const addressType = utils.addressType(proof.to);
-        if (addressType == CardanoWasm.StakeCredKind.Script) {
+        if (addressType == CardanoWasm.CredKind.Script) {
             action = '2';
         }
         return CardanoWasm.PlutusData.new_constr_plutus_data(
@@ -1964,7 +2017,8 @@ class MintCheckScript {
         if (proof.tokenId) [policy_id, tokenName] = proof.tokenId.split('.');
 
         ls.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(to.pkhPay, 'hex')));
-        ls.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(to.pkhStk, 'hex')));
+        if(to.pkhStk) ls.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(to.pkhStk, 'hex')));
+        else ls.add(CardanoWasm.PlutusData.new_bytes(Buffer.from('', 'hex')));
         ls.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(policy_id, 'hex')));
         ls.add(CardanoWasm.PlutusData.new_bytes(Buffer.from(tokenName, 'hex')));
         ls.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(proof.amount + '')));
@@ -1989,7 +2043,7 @@ class MintCheckScript {
         // )
 
         const addressType = utils.addressType(proof.to);
-        if (addressType == CardanoWasm.StakeCredKind.Script) {
+        if (addressType == CardanoWasm.CredKind.Script) {
             const lastls = CardanoWasm.PlutusList.new();
             if (proof.userData === undefined) throw 'userData required';
             const proofPart = CardanoWasm.PlutusData.new_constr_plutus_data(
@@ -2118,8 +2172,11 @@ class MintCheckScript {
             redeemerData,
             exUnitsMint
         );
+
+        const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(checkTokenScriptRef);
+
         let mint_witnes = CardanoWasm.MintWitness.new_plutus_script(
-            CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(MintCheckTokenScript.script().hash(), checkTokenScriptRefInput, CardanoWasm.Language.new_plutus_v2())
+            CardanoWasm.PlutusScriptSource.new_ref_input(scriptTmp.hash(), checkTokenScriptRefInput, scriptTmp.language_version(), scriptSize)
             , redeemer);
         const assetName = CardanoWasm.AssetName.new(Buffer.from(MintCheckTokenScript.tokenName()));
         // console.log(assetName.to_json());
@@ -2136,8 +2193,8 @@ class MintCheckScript {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             totalInputValue = totalInputValue.checked_add(value);
-            // txBuilder.add_input(from, input, value);
-            txInputBuilder.add_input(from, input, value);
+            // txBuilder.add_regular_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
         }
 
         for (let i = 0; i < utxosSpend.length; i++) {
@@ -2164,13 +2221,12 @@ class MintCheckScript {
             const redeemer = CardanoWasm.Redeemer.new(CardanoWasm.RedeemerTag.new_spend(), CardanoWasm.BigNum.from_str('0'), redeemerData, exUnits);
 
             const scriptHash = utils.addressToPkhOrScriptHash(utxo.address);
-            // const witness = CardanoWasm.PlutusWitness.new_with_ref(CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-            //     CardanoWasm.ScriptHash.from_hex(scriptHash), scriptRefInput, CardanoWasm.Language.new_plutus_v2())
-            //     , CardanoWasm.DatumSource.new_ref_input(input)
-            //     , redeemer);
+
+            const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(scriptRef);
+
             const witness = CardanoWasm.PlutusWitness.new_with_ref_without_datum(
-                CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(
-                    CardanoWasm.ScriptHash.from_hex(scriptHash), scriptRefInput, CardanoWasm.Language.new_plutus_v2())
+                CardanoWasm.PlutusScriptSource.new_ref_input(
+                    CardanoWasm.ScriptHash.from_hex(scriptHash), scriptRefInput, scriptTmp.language_version(), scriptSize)
                 , redeemer
             )
 
@@ -2195,7 +2251,7 @@ class MintCheckScript {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
@@ -2301,8 +2357,11 @@ class CheckTokenScriptBase {
             redeemerData,
             exUnits
         );
+
+        const { script: scriptTmp, scriptSize } = utils.plutusScriptFromScriptRef(scriptRef);
+
         let mint_witnes = CardanoWasm.MintWitness.new_plutus_script(
-            CardanoWasm.PlutusScriptSource.new_ref_input_with_lang_ver(this.script().hash(), scriptRefInput, CardanoWasm.Language.new_plutus_v2())
+            CardanoWasm.PlutusScriptSource.new_ref_input(scriptTmp.hash(), scriptRefInput, scriptTmp.language_version(), scriptSize)
             , redeemer);
         const assetName = CardanoWasm.AssetName.new(Buffer.from(this.tokenName()));
         // console.log(assetName.to_json());
@@ -2319,8 +2378,8 @@ class CheckTokenScriptBase {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             totalInputValue = totalInputValue.checked_add(value);
-            // txBuilder.add_input(from, input, value);
-            txInputBuilder.add_input(from, input, value);
+            // txBuilder.add_regular_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
         }
 
         const authorityDatum = utils.genDemoDatum42();
@@ -2369,7 +2428,7 @@ class CheckTokenScriptBase {
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
             collaterOwnerAddress = from;
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
@@ -2430,8 +2489,8 @@ class FakeToken {
         return this.script(adminPubKh).hash().to_hex();
     }
 
-    static tokenId(adminPubKh, tokenName) {
-        return this.policy_id(adminPubKh) + '.' + Buffer.from(tokenName).toString('hex');
+    static tokenId(adminPubKh, tokenName,encoding = 'ascii') {
+        return this.policy_id(adminPubKh) + '.' + Buffer.from(tokenName, encoding).toString('hex');
     }
 
     static async mintNFT(protocolParams, utxosForFee, utxoForCollateral, adminPubKh, to, tokenName, amount, ttl, signFn, isNFT = false, meteData = undefined) {
@@ -2446,7 +2505,7 @@ class FakeToken {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             changeAddr = from;
-            txBuilder.add_input(from, input, value);
+            txBuilder.add_regular_input(from, input, value);
         }
 
         const txCollateralInputBuilder = CardanoWasm.TxInputsBuilder.new();
@@ -2456,19 +2515,19 @@ class FakeToken {
             const input = CardanoWasm.TransactionInput.new(txId, utxoCollateral.index);
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
         const mintBuilder = CardanoWasm.MintBuilder.new();
-        let mint_witnes = CardanoWasm.MintWitness.new_native_script(FakeToken.script(adminPubKh));
-        const assetName = CardanoWasm.AssetName.new(Buffer.from(utils.genNFTAssetName(tokenName, meteData ? 100: (isNFT ? 222 : 333) ), 'hex'));
+        let mint_witnes = CardanoWasm.MintWitness.new_native_script(CardanoWasm.NativeScriptSource.new(FakeToken.script(adminPubKh)));
+        const assetName = CardanoWasm.AssetName.new(Buffer.from(utils.genNFTAssetName(tokenName, meteData ? 100 : (isNFT ? 222 : 333)), 'hex'));
         mintBuilder.add_asset(mint_witnes, assetName, CardanoWasm.Int.from_str('' + amount));
 
         const toAddr = CardanoWasm.Address.from_bech32(to);
         const scriptHash = FakeToken.script(adminPubKh).hash();
         const tokenId = scriptHash.to_hex() + '.' + assetName.to_hex();
-        const minAdaWithMintToken = utils.getMinAdaOfUtxo(protocolParams, toAddr, { coins: 1000000, assets: { [tokenId]: amount } });
+        const minAdaWithMintToken = utils.getMinAdaOfUtxo(protocolParams, toAddr, { coins: 1000000, assets: { [tokenId]: amount } },meteData);
         const mutiAsset = CardanoWasm.MultiAsset.new();
         const asset = CardanoWasm.Assets.new();
         asset.insert(assetName, CardanoWasm.BigNum.from_str('' + amount));
@@ -2521,7 +2580,7 @@ class FakeToken {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             changeAddr = from;
-            txBuilder.add_input(from, input, value);
+            txBuilder.add_regular_input(from, input, value);
         }
 
         const txCollateralInputBuilder = CardanoWasm.TxInputsBuilder.new();
@@ -2531,12 +2590,12 @@ class FakeToken {
             const input = CardanoWasm.TransactionInput.new(txId, utxoCollateral.index);
             const value = utils.funValue(utxoCollateral.value);
             const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
-            txCollateralInputBuilder.add_input(from, input, value);
+            txCollateralInputBuilder.add_regular_input(from, input, value);
         }
         txBuilder.set_collateral(txCollateralInputBuilder);
 
         const mintBuilder = CardanoWasm.MintBuilder.new();
-        let mint_witnes = CardanoWasm.MintWitness.new_native_script(FakeToken.script(adminPubKh));
+        let mint_witnes = CardanoWasm.MintWitness.new_native_script(CardanoWasm.NativeScriptSource.new(FakeToken.script(adminPubKh)));
         const assetName = CardanoWasm.AssetName.new(Buffer.from(tokenName));
         mintBuilder.add_asset(mint_witnes, assetName, CardanoWasm.Int.from_str('' + amount));
 
@@ -2596,7 +2655,7 @@ class FakeToken {
             const value = utils.funValue(utxoForFee.value);
             const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
             changeAddr = from;
-            txInputBuilder.add_input(from, input, value);
+            txInputBuilder.add_regular_input(from, input, value);
         }
 
         const toAddr = CardanoWasm.Address.from_bech32(to);
@@ -2630,6 +2689,7 @@ let Network_Id = 1
 function init(network = true) {
     contractMgr.init(network);
     nftContracts.init(network);
+    msgContracts.init(network);
     const currentPlutus = network ? plutus.mainnet : plutus.testnet;
     Network_Id = network ? 1 : 0;
 
@@ -2652,14 +2712,14 @@ function init(network = true) {
     // if(treasuryCheckTokenScript) treasuryCheckTokenScript.free();
     // if(mintCheckTokenScript) mintCheckTokenScript.free();
 
-    treasuryScript = CardanoWasm.PlutusScript.from_bytes_v2(Buffer.from(treasuryPlutus.cborHex, 'hex'));
-    treasuryCheckScript = CardanoWasm.PlutusScript.from_bytes_v2(Buffer.from(treasuryCheckPlutus.cborHex, 'hex'));
-    mappingTokenScript = CardanoWasm.PlutusScript.from_bytes_v2(Buffer.from(mappingTokenPlutus.cborHex, 'hex'));
-    mintCheckScript = CardanoWasm.PlutusScript.from_bytes_v2(Buffer.from(mintCheckPlutus.cborHex, 'hex'));
+    treasuryScript = utils.plutusScriptFromPlutusObj(treasuryPlutus);
+    treasuryCheckScript = utils.plutusScriptFromPlutusObj(treasuryCheckPlutus);
+    mappingTokenScript = utils.plutusScriptFromPlutusObj(mappingTokenPlutus);
+    mintCheckScript = utils.plutusScriptFromPlutusObj(mintCheckPlutus);
 
 
-    treasuryCheckTokenScript = CardanoWasm.PlutusScript.from_bytes_v2(Buffer.from(treasuryCheckTokenPlutus.cborHex, 'hex'));
-    mintCheckTokenScript = CardanoWasm.PlutusScript.from_bytes_v2(Buffer.from(mintCheckTokenPlutus.cborHex, 'hex'));
+    treasuryCheckTokenScript = utils.plutusScriptFromPlutusObj(treasuryCheckTokenPlutus);
+    mintCheckTokenScript = utils.plutusScriptFromPlutusObj(mintCheckTokenPlutus);
     // console.log("treasuryScript:",treasuryScript.hash().to_hex());
     // console.log("treasuryCheckScript:",treasuryCheckScript.hash().to_hex());
     // console.log("mappingTokenScript:",mappingTokenScript.hash().to_hex());

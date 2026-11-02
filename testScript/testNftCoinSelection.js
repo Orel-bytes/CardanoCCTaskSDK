@@ -90,8 +90,8 @@ async function main(){
 	console.log("\n\n...getCurrentProtocolParameters ret: ", protocolParams);	
 	let minFeeA = JSON.stringify(protocolParams.minFeeCoefficient);
 	let minFeeB = JSON.stringify(protocolParams.minFeeConstant);
-	let coinsPerUtxoWord = JSON.stringify(protocolParams.coinsPerUtxoByte * 2);
-	console.log("\n\n...coinsPerUtxoWord ret: ", coinsPerUtxoWord);	
+	let coinsPerUtxoByte = JSON.stringify(protocolParams.coinsPerUtxoByte);
+	console.log("\n\n...coinsPerUtxoByte ret: ", coinsPerUtxoByte);	
 	console.log("...minFeeA ret: ", minFeeA);	
 	console.log("...minFeeB ret: ", minFeeB);
 
@@ -128,7 +128,7 @@ async function main(){
 
 
 	let coinSelectionInst = buildCoinSelectionInst();
-	coinSelectionInst.setProtocolParameters(coinsPerUtxoWord, minFeeA, minFeeB, maxTxSize='10000');
+	coinSelectionInst.setProtocolParameters(coinsPerUtxoByte, minFeeA, minFeeB, maxTxSize='10000');
 
 	let transferAmount = new Array();
 	// 5e4a2431a465a00dc5d8181aaff63959bb235d97013e7acb50b55bc4.4e6f646546656564
@@ -138,7 +138,7 @@ async function main(){
 	let amountItemA = {
 		"unit": "5e4a2431a465a00dc5d8181aaff63959bb235d97013e7acb50b55bc4",
 		"name": "4e6f646546656564",
-		"amount": "1"
+		"amount": "2"
 	};	
 	transferAmount.push(amountItemA);
 
@@ -149,12 +149,12 @@ async function main(){
 	};
 	transferAmount.push(amountItemB);
 
-	let amountItemC = {
-		"unit": "5e4a2431a465a00dc5d8181aaff63959bb235d97013e7acb50b55bc4",
-		"name": "4167675374617465",
-		"amount": "1"
-	};
-	transferAmount.push(amountItemC);
+	// let amountItemC = {
+	// 	"unit": "5e4a2431a465a00dc5d8181aaff63959bb235d97013e7acb50b55bc4",
+	// 	"name": "4167675374617465",
+	// 	"amount": "1"
+	// };
+	// transferAmount.push(amountItemC);
 
 	let toAddress = "addr_test1qz6twkzgss75sk379u0e27phvwhmtqqfuhl5gnx7rh7nux2xg4uwrhx9t58far8hp3a06hfdfzlsxgfrzqv5ryc78e4s4dwh26";
 	let limit = 3;

@@ -7,7 +7,9 @@ const Config = require('./config');
 const Cbor = require('cbor-sync');
 const UtxoSelectionService = require('./bizServices/utxoSelectionService');
 const NftContractService = require('./bizServices/nftContractService');
+const BalanceTxMultiSig = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
+const LEADER_FEE_AMOUNT = "5000000";
 
 class PlutusNftTxBuilder {
 
@@ -18,7 +20,7 @@ class PlutusNftTxBuilder {
         this.utxosManagerObj = utxosManager;
 
         this.ADDR_PREFIX = Config.PlutusCfg.testnetPrefix;
-        this.network_id = CardanoWasm.NetworkInfo.testnet().network_id();
+        this.network_id = CardanoWasm.NetworkInfo.testnet_preprod().network_id();
         if (bMainnet) {
             this.ADDR_PREFIX = Config.PlutusCfg.mainnetPrefix;
             this.network_id = CardanoWasm.NetworkInfo.mainnet().network_id();
@@ -26,6 +28,7 @@ class PlutusNftTxBuilder {
         this.maxPlutusUtxoNum = Config.PlutusCfg.maxUtxoNum;
 
         this.coinsPerUtxoWord = undefined;
+        this.coinsPerUtxoByte = undefined;
         this.minFeeA = undefined;
         this.minFeeB = undefined;
         this.protocolParams = undefined;
@@ -47,20 +50,41 @@ class PlutusNftTxBuilder {
         this.utxoSelectionService = new UtxoSelectionService(this.ADDR_PREFIX);
         this.contractService = new NftContractService(bMainnet, this.ADDR_PREFIX, logUtil);
 
+        this.validCheckTokenPolicyId = this.contractService.validCheckTokenPolicyId;
+        this.validMappingCheckTokenPolicyId = this.contractService.validMappingCheckTokenPolicyId;
+
         this.logger = logUtil;
+        this.memScriptRefUtxos = new Array();
     }
 
-    async init() {
-        let stakeCred = await this.getGroupInfoStkVh();
-        this.lockerScAddress = this.contractService.getLockerScAddress(stakeCred);
-        // this.lockerScAddress = "addr_test1qq0rlnqmmmrl4wzy35nt0pzsuu88h78swk4wnjrpzy8yk62mqlt3z2733rdlarwrd0l9sgx5t99qgsejv52qrzwmm8hqfvmgam";
-        console.log("\n\n..init...this.lockerScAddress: ", this.lockerScAddress);
+    init() {
+        // let stakeCred = await this.getGroupInfoStkVh();
+        this.nftRefHolderAddr = this.getNFTRefHolderScript();
+        if (undefined === this.nftRefHolderAddr) {
+            return false;
+        }
+
+        this.lockerScAddress = this.bMainnet ? Config.MainNet.NftTreasuryScAddress: Config.TestNet.NftTreasuryScAddress;
+        console.log("\n\n..init...the nft lockerScAddress: ", this.lockerScAddress);
+        if (undefined === this.lockerScAddress) {
+            return false;
+        }
 
         this.signMode = this.contractService.getSignMode();
         this.validPolicyId = this.contractService.getValidPolicyId();
 
         this.utxosManagerObj.setNftTreasuryScAddress(this.lockerScAddress);
         console.log("\n\n\n\******* this.lockerScAddress: ", this.lockerScAddress);
+
+        return true;
+    }
+
+    getCheckTokenPolicyId() {
+        return this.validCheckTokenPolicyId;
+    }
+
+    getMintCheckTokenPolicyId() {
+        return this.validMappingCheckTokenPolicyId;
     }
 
     //////////////////////////////////////////
@@ -98,19 +122,35 @@ class PlutusNftTxBuilder {
                     mapAssetAvailable.set(assetUnit, true);
                 }
             }
+            for (let assetUnit in itemAssets) {
+                let index = refAssets.indexOf(assetUnit);
+                if (-1 !== index) {
+                    mapAssetAvailable.set(assetUnit, true);
+                }
+            }
         }
 
         return mapAssetAvailable;
     }
 
+    convertMetadata2TxDatum(metaData) {
+        let txDatum = this.commonUtil.metadata2datum(metaData);
+        return txDatum;
+    }
+
     genNFTAssetName(name, typeCode) {
-        let ret = this.commonUtil.genNFTAssetName(name, typeCode);
-        return ret;
+        let nftAssetName = this.contractService.genNFTAssetName(name, typeCode);
+        return nftAssetName;
+    }
+
+    genNFTIdFromAssetName(assetNameHex) {
+        let nftId = this.contractService.genNFTIdFromAssetName(assetNameHex);
+        return nftId;
     }
 
     getNFTRefHolderScript() {
         // need to check whether this hold address is given by sc sdk?? or transfer by agent??
-        let nftRefHolderAddr = this.contractService.getRefHolderScript();
+        let nftRefHolderAddr = this.contractService.getRefHolderScript().to_bech32();
         return nftRefHolderAddr;
     }
 
@@ -135,11 +175,11 @@ class PlutusNftTxBuilder {
                 signature: '',
                 // pk: this.groupPK,
                 uniqueId: proofInfo.uniqueId,
-                policy_id: proofInfo.policyId,
+                policy_id: proofInfo.policy_id,
                 txType: proofInfo.txType,
                 ttl: proofInfo.ttl
             }
-            // this.logger.debug("..PlutusNftTxBuilder......genRedeemProofHash redeemerProof: ", JSON.stringify(redeemerProof, null, 0))
+            this.logger.debug("..PlutusNftTxBuilder......genRedeemProofHash redeemerProof: ", JSON.stringify(redeemerProof, null, 0))
             let redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
             this.logger.debug("..PlutusNftTxBuilder......genRedeemProofHash caculateRedeemDataHash: ", redeemProofHash);
 
@@ -171,6 +211,7 @@ class PlutusNftTxBuilder {
                 signature: '',
                 // pk: this.groupPK,
                 uniqueId: proofInfo.uniqueId,
+                policy_id: proofInfo.policy_id,
                 nftAssets: proofInfo.nftAssets,
                 nftRefAssets: proofInfo.nftRefAssets,
                 userData: proofInfo.userData,
@@ -200,7 +241,7 @@ class PlutusNftTxBuilder {
             throw e;
         }
 
-        let redeemer = this.contractService.deCodeTxRedeemersCbor(txUtxos, bMintCheck);
+        let redeemer = this.contractService.deCodeTxRedeemersCbor(txInfo, txUtxos, bMintCheck);
         return redeemer;
     }
 
@@ -227,9 +268,9 @@ class PlutusNftTxBuilder {
     async getTreasuryCheckRefAndAvailableUtxo(checkVH, bMintCheck) {
         // Step 1: treasuryCheckRefUtxo
         let treasuryCheckRef = await this.getScriptRefUtxoByVH(checkVH);
-        console.log("\n..getTreasuryCheckRefAndAvailableUtxo treasuryCheckRef: ", treasuryCheckRef);
+        // console.log("\n..getTreasuryCheckRefAndAvailableUtxo treasuryCheckRef: ", treasuryCheckRef.length);
         if (undefined === treasuryCheckRef) {
-            this.logger.debug("..PlutusNftTxBuilder...getScriptRefUtxo...error:: no available check ref utxo");
+            this.logger.debug("..PlutusNftTxBuilder...getScriptRefUtxoByVH...error:: no available check ref utxo");
             return undefined;
         }
 
@@ -297,17 +338,24 @@ class PlutusNftTxBuilder {
             return undefined;
         }
 
+        // to filte the valid check token utxos with the valid policyId
+        let validCheckTokenUtxos = this.fiterValidCheckTokenUtxos(availableUtxos);
+        if ((undefined === validCheckTokenUtxos) || (validCheckTokenUtxos.length < 1)) {
+            this.logger.debug("..PlutusTxBuilder...getScriptCheckRefAvailableUtxo...warning: no valid check utxo");
+            return undefined;
+        }
+
         let treasuryCheckUxto = undefined; // availableTreasuryCheckUxto
 
-        let txId = availableUtxos[0].txIn.txId;
-        let txIndex = availableUtxos[0].txIn.index;
+        let txId = validCheckTokenUtxos[0].txIn.txId;
+        let txIndex = validCheckTokenUtxos[0].txIn.index;
         for (let k = 0; k < utxos.length; k++) {
             let utxo = utxos[k];
             if ((txId === utxo.txHash) && (txIndex === utxo.index)) {
                 treasuryCheckUxto = utxo;
-                // this.logger.debug("..PlutusNftTxBuilder......selected availableUtxos: ", utxo);
+                // this.logger.debug("..PlutusNftTxBuilder......selected validCheckTokenUtxos: ", utxo);
                 // to add new pending consumed utxos for scriptCheckRefAddress
-                this.utxosManagerObj.appendPendingComsumedUtxo(scriptCheckRefAddress, availableUtxos[0], this.curChainTip.slot);
+                this.utxosManagerObj.appendPendingComsumedUtxo(scriptCheckRefAddress, validCheckTokenUtxos[0], this.curChainTip.slot);
 
                 break;
             }
@@ -316,32 +364,97 @@ class PlutusNftTxBuilder {
         return treasuryCheckUxto;
     }
 
-    async getScriptRefUtxoByVH(checkVH) {
-        let refUtxo = await this.utxosManagerObj.getUtxo(this.scriptRefOwnerAddr, false);
-        console.log(`..PlutusNftTxBuilder....getScriptRefUtxoByVH ${refUtxo.length} utxos of scriptRefOwner: ${this.scriptRefOwnerAddr} `);
+    fiterValidCheckTokenUtxos(formatUtxos) {
+        let validCheckTokenUtxos = new Array();
+        for (let i = 0; i < formatUtxos.length; i++) {
 
-        const ref = refUtxo.find(o => {
-            const buf = Buffer.from(o.script['plutus:v2'], 'hex');
-            const cborHex = Cbor.encode(buf, 'buffer');
+            let utxoItem = formatUtxos[i];
+            let bValid = this.parseCheckTokenValidity(utxoItem);
+            if (bValid) {
+                validCheckTokenUtxos.push(utxoItem);
+            }
+        }
 
-            return CardanoWasm.PlutusScript.from_bytes_v2(cborHex).hash().to_hex() == checkVH
+        return validCheckTokenUtxos;
+    }
 
+    parseCheckTokenValidity(formatUtxo) {
+
+        let bContainCheckToken = false;
+
+        let txOutData = formatUtxo.txOut;
+        if (1 === txOutData.value.length) {
+            // in case there is just ada asset
+            return false;
+        }
+
+        for (let i = 1; i < txOutData.value.length; i++) {
+            if ("lovelace" === txOutData.value[i].unit) {
+                continue;
+            }
+
+            let tokenPolicyId = txOutData.value[i].unit.slice(0, 56);
+            if ((this.validCheckTokenPolicyId === tokenPolicyId)
+                || (this.validMappingCheckTokenPolicyId === tokenPolicyId)) {
+                bContainCheckToken = true;
+                break;
+            }
+        }
+
+        return bContainCheckToken;
+    }
+
+    fetchRefUtxoFromMem(keyHash) {
+        const ref = this.memScriptRefUtxos.find(o => {
+            let v2Tag = true;
+            let scriptBuff = o.script['plutus:v2'];
+            if (undefined === scriptBuff) {
+                v2Tag = false;
+                scriptBuff = o.script['plutus:v3'];
+            }
+            const buf = Buffer.from(scriptBuff, 'hex');
+            const cborHex = cbor.encode(buf, 'buffer');
+
+            let scriptHash = v2Tag ? CardanoWasm.PlutusScript.from_bytes_v2(cborHex).hash().to_hex() : CardanoWasm.PlutusScript.from_bytes_v3(cborHex).hash().to_hex();
+            return scriptHash == keyHash
         });
-        console.log(`..PlutusNftTxBuilder....getScriptRefUtxoByVH result: ${ref} `);
+
+        return ref;
+    }
+
+    async getScriptRefUtxoByVH(checkVH) {
+        // console.log(`..PlutusNftTxBuilder....getScriptRefUtxoByVH ${refUtxo.length} utxos of scriptRefOwner: ${this.scriptRefOwnerAddr} `);
+
+        let ref = this.fetchRefUtxoFromMem(checkVH);
         if (undefined === ref) {
-            return undefined;
+            // refresh scriptRefUtxos from wanOgmiosService
+            this.memScriptRefUtxos = await this.getUtxo(this.scriptRefOwnerAddr, false);
+            ref = this.fetchRefUtxoFromMem(checkVH);
+        }
+        // this.logger.debug(`..PlutusNftTxBuilder.... getScriptRefUtxoByVH's ref-utxo: ${JSON.stringify(ref)} `);
+        return ref;
+    }
+
+    async getScriptRefUtxo4MappingToken(mappingTokenPolicyId) {
+
+        let ref = this.fetchRefUtxoFromMem(checkVH);
+        if (undefined === ref) {
+            // refresh scriptRefUtxos from wanOgmiosService
+            this.memScriptRefUtxos = await this.getUtxo(this.scriptRefOwnerAddr, false);
+            ref = this.fetchRefUtxoFromMem(mappingTokenPolicyId);
         }
         // this.logger.debug(`..PlutusNftTxBuilder.... getScriptRefUtxoByVH's ref-utxo: ${JSON.stringify(ref)} `);
         return ref;
     }
 
     async getScriptRefUtxo(script) {
-        let refUtxo = await this.utxosManagerObj.getUtxo(this.scriptRefOwnerAddr, false);
         // this.logger.debug(`..PlutusNftTxBuilder....get ${refUtxo.length} utxos of scriptRefOwner: ${this.scriptRefOwnerAddr} `);
 
-        const ref = refUtxo.find(o => script.to_hex().indexOf(o.script['plutus:v2']) >= 0);
+        let ref = this.memScriptRefUtxos.find(o => script.to_hex().indexOf(o.script['plutus:v2'] || o.script['plutus:v3']) >= 0);
         if (undefined === ref) {
-            return undefined;
+            // refresh scriptRefUtxos from wanOgmiosService
+            this.memScriptRefUtxos = await this.getUtxo(this.scriptRefOwnerAddr, false);
+            ref = this.memScriptRefUtxos.find(o => script.to_hex().indexOf(o.script['plutus:v2'] || o.script['plutus:v3']) >= 0);
         }
         // this.logger.debug(`..PlutusNftTxBuilder.... scriptRefOwner's ref-utxo: ${JSON.stringify(ref)} `);
         return ref;
@@ -403,7 +516,7 @@ class PlutusNftTxBuilder {
 
     async getTreasuryCheckAddress(bMintCheck) {
         this.groupInfoToken = await this.getGroupInfoToken();
-        // this.logger.debug("..PlutusNftTxBuilder......getGroupInfoToken...: ", this.groupInfoToken);
+        this.logger.debug("..PlutusNftTxBuilder......getGroupInfoToken...: ", this.groupInfoToken);
         if (false === this.groupInfoToken) {
             throw "getTreasuryCheckAddress: exception network during get group info token";
         }
@@ -475,24 +588,33 @@ class PlutusNftTxBuilder {
                 this.minFeeA = JSON.stringify(this.protocolParams.minFeeCoefficient);
                 this.minFeeB = JSON.stringify(this.protocolParams.minFeeConstant);
                 this.coinsPerUtxoWord = JSON.stringify(this.protocolParams.coinsPerUtxoByte * 2);
+                this.coinsPerUtxoByte = JSON.stringify(this.protocolParams.coinsPerUtxoByte);
                 this.maxTxSize = JSON.stringify(this.protocolParams.maxTxSize);
 
                 const v1 = CardanoWasm.CostModel.new();
                 let index = 0;
-                for (const key in this.protocolParams.costModels["plutus:v1"]) {
-                    v1.set(index, CardanoWasm.Int.new_i32(this.protocolParams.costModels["plutus:v1"][key]));
+                for (let i = 0; i < this.protocolParams.plutusCostModels["plutus:v1"].length; i++) {
+                    v1.set(index, CardanoWasm.Int.new_i32(this.protocolParams.plutusCostModels["plutus:v1"][i]));
                     index++;
                 }
 
                 const v2 = CardanoWasm.CostModel.new();
                 index = 0;
-                for (const key in this.protocolParams.costModels["plutus:v2"]) {
-                    v2.set(index, CardanoWasm.Int.new_i32(this.protocolParams.costModels["plutus:v2"][key]));
+                for (let j = 0; j < this.protocolParams.plutusCostModels["plutus:v2"].length; j++) {
+                    v2.set(index, CardanoWasm.Int.new_i32(this.protocolParams.plutusCostModels["plutus:v2"][j]));
+                    index++;
+                }
+
+                const v3 = CardanoWasm.CostModel.new();
+                index = 0;
+                for (let k = 0; k < this.protocolParams.plutusCostModels["plutus:v3"].length; k++) {
+                    v3.set(index, CardanoWasm.Int.new_i32(this.protocolParams.plutusCostModels["plutus:v3"][k]));
                     index++;
                 }
                 this.protocolParams.costModels = CardanoWasm.Costmdls.new();
                 this.protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v1(), v1);
                 this.protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v2(), v2);
+                this.protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v3(), v3);
 
             } catch (e) {
                 this.logger.debug("..PlutusNftTxBuilder......getCurChainParams failed: ", e);
@@ -518,7 +640,10 @@ class PlutusNftTxBuilder {
 
     async confirmTx(txHash) {
         if (undefined === this.lockerScAddress) {
-            throw "failed to initial sdk!";
+            let ret = await this.init();
+            if (false === ret) {
+                throw "failed to initial sdk!";
+            }
         }
         // this.logger.debug("..PlutusNftTxBuilder...", txHash, "...confirmTx...lockerScAddress: ", this.lockerScAddress);
 
@@ -567,7 +692,10 @@ class PlutusNftTxBuilder {
     async buildSignedTx(basicArgs, internalSignFunc, partialRedeemerArgs) {
         this.logger.debug("..PlutusNftTxBuilder...buildSignedTx......basicArgs:", basicArgs);
         if (undefined === this.lockerScAddress) {
-            throw "failed to initial sdk!";
+            let ret = await this.init();
+            if (false === ret) {
+                throw "failed to initial sdk!";
+            }
         }
 
         //this.logger.debug("..PlutusNftTxBuilder...buildSignedTx......partialRedeemerArgs:", partialRedeemerArgs);
@@ -583,7 +711,7 @@ class PlutusNftTxBuilder {
         let encodedGpk = this.commonUtil.encodeGpk(basicArgs.gpk);
         // this.logger.debug("..PlutusNftTxBuilder...", basicArgs.hashX, "...this.groupInfoToken: ", this.groupInfoToken);
         if (this.groupPK !== encodedGpk) {
-        // {
+            // {
             this.groupInfoToken = await this.getGroupInfoToken();
             // this.logger.debug("..PlutusNftTxBuilder...", basicArgs.hashX, "...getGroupInfoToken...: ", this.groupInfoToken);
             console.log("...getGroupInfoToken...: ", this.groupInfoToken);
@@ -655,7 +783,7 @@ class PlutusNftTxBuilder {
     }
 
     async buildAndSignNftRawTx(internalSignFunc, basicArgs, minAda, partialRedeemerArgs) {
-        // this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftRawTx current slot: ", this.curChainTip.slot);
+        // console.log("\n\n..PlutusNftTxBuilder......buildAndSignNftRawTx basicArgs: ", basicArgs);
         const to = basicArgs.crossAddress;
         const metaData = basicArgs.metaData;
         const uniqueId = basicArgs.hashX;
@@ -692,63 +820,53 @@ class PlutusNftTxBuilder {
         this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...transferAmount: ", transferAmount);
 
         // step 1-2: to select nft utxo for ccTask
-        /* Modify By NFT Program: 
-            need to check if coinselection can handle multi-types utxo selection -- done!!
-        */
-        let contractUtxoRet = undefined;
+        let selectedNftUtxos = new Array(); // the object of selectedNftUtxos should be formated utxo
+        let totalUtxos = undefined;
         do {
-            contractUtxoRet = await this.utxosManagerObj.getNftUtxoOfAmount(this.lockerScAddress,
-                to,
-                transferAmount,
-                Config.PlutusCfg.maxUtxoNum,
-                uniqueId,
-                true);
-            if (undefined === contractUtxoRet) {
-                throw "failed to get treasury utxos for uniqueId: " + uniqueId;
-            }
 
-            console.log("\n\n....getNftUtxoOfAmount...contractUtxoRet: ", contractUtxoRet.checkStatus, contractUtxoRet.marginAmount);
-
-            // in case the task takes reserved utxo with pending available status
-            if (("PendingAvailable" === contractUtxoRet.checkStatus)
-                || ("NoAvailable" === contractUtxoRet.checkStatus)) {
-                this.commonUtil.sleep(10 * 1000);
+            totalUtxos = await this.utxosManagerObj.getTotalUtxos(this.lockerScAddress);
+            if (0 === totalUtxos.length) {
+                // in case fail to get utxos or there is no available utxos
+                await this.commonUtil.sleep(30 * 1000);
                 continue;
             }
 
-            // in case there are enough available utxos for this task
-            if ("Available" === contractUtxoRet.checkStatus) {
+            let checkRet = this.utxosManagerObj.checkPreReservedUtxo(totalUtxos, uniqueId, transferAmount);
+            // in case the task takes reserved utxo with pending available status
+            this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "..checkPreReservedUtxo result..", checkRet);
+            if ("PendingReserved" === checkRet.reservedStatus) {
+                await this.commonUtil.sleep(30 * 1000);
+                continue;
+            }
+
+            if (0 === checkRet.marginAmount.length) {
+                let reservdUtxos = new Array();
+                reservdUtxos.push(checkRet.reservedUtxo);
+                selectedNftUtxos = this.commonUtil.formatUtxoData(reservdUtxos);
                 break;
             }
 
-            // in case need to merge more utxos based on preReserved utxo, 
-            if ("InSufficent" === contractUtxoRet.checkStatus) {
-                // step 1-3: in case of no suitable nft utxo  
-                /* Modify By NFT Program: 
-                    in case of no any utxo for this kind nft, need to balance nft utxos for cctask
-                */
-                let ret = this.selectBalanceNftUtxos(contractUtxoRet.selectedUtxos, contractUtxoRet.totalUtxos, contractUtxoRet.marginAmount);
-                if (undefined !== ret) {
-                    // let ret = {
-                    //     "selectedUtxos": selectedNftUtxos,
-                    //     "marginAmount": marginNftAmount,
-                    //     "targetAmount": targetNftAmount,
-                    // }
-                    if ((0 === ret.marginAmount.length) && (Config.PlutusCfg.maxUtxoNum >= ret.selectedUtxos.length)) {
-                        // in case coinselection is failed and there are enough available utxos for task
-                        contractUtxoRet.selectedUtxos = ret.selectedUtxos;
-                        break;
-                    } else {
-                        let mergedTxId = await this.handleNftUtxosBalance(internalSignFunc, ret.selectedUtxos, ret.targetAmount, uniqueId, nftPolicyId);
-                        if (undefined === mergedTxId) {
-                            console.log("\n\n...handleNftUtxosBalance mergedTxId is undefined! ");
-                            // throw "handle nft utxos merging failed for uniqueId: " + uniqueId;
-                        }
+            // step 1-3: in case of no suitable nft utxo 
+            let ret = this.selectBalanceNftUtxos(checkRet.reservedUtxo, totalUtxos, checkRet.marginAmount, transferAmount);
+            if (undefined !== ret) {
+                // ret = {
+                //     "selectedUtxos": selectedNftUtxos,
+                //     "marginAmount": marginNftAmount,
+                //     "targetAmount": targetNftAmount,
+                // }
+                if ((0 === ret.marginAmount.length) && (Config.PlutusCfg.maxUtxoNum >= ret.selectedUtxos.length)) {
+                    // in case coinselection is failed and there are enough available utxos for task
+                    selectedNftUtxos = ret.selectedUtxos;
+                    break;
+                } else {
+                    let mergedTxId = await this.handleNftUtxosBalance(internalSignFunc, totalUtxos, ret.selectedUtxos, ret.targetAmount, uniqueId, nftPolicyId);
+                    if (undefined === mergedTxId) {
+                        console.log("\n\n...handleNftUtxosBalance mergedTxId is undefined! ");
                     }
+                    await this.commonUtil.sleep(60 * 1000);
                 }
             }
 
-            this.commonUtil.sleep(5 * 1000);
 
         } while (true);
 
@@ -762,10 +880,11 @@ class PlutusNftTxBuilder {
             transferNftAmount, 
             this.lockerScAddress);
         */
-        let treasuryUtxo = contractUtxoRet.selectedUtxos;
+        let treasuryUtxo = this.commonUtil.filterUtxosFromFormatedUtxos(totalUtxos, selectedNftUtxos);
+        this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...selected treasury Utxo: ", JSON.stringify(treasuryUtxo));
         let treasuryUtxoChangeInfo = this.commonUtil.parseTreasuryNftUtxoChangeData(
             this.protocolParams,
-            treasuryUtxo,
+            selectedNftUtxos,
             transferAmount,
             this.lockerScAddress);
         if (undefined === treasuryUtxoChangeInfo) {
@@ -782,12 +901,14 @@ class PlutusNftTxBuilder {
         // Step 2: to get treasury data
         // Step 2-1: treasuryCheckRef&&Uxto 
         const treasuryCheckVH = this.contractService.getTreasuryCheckVH(this.groupInfoToken.datum);
+        console.log("\n\n...parseTreasuryNftUtxoChangeData treasuryCheckVH: ", treasuryCheckVH);
         if (undefined == treasuryCheckVH) {
             this.utxosManagerObj.releaseUtxos(treasuryUtxo);
             throw "failed to get treasury check VH for uniqueId: " + uniqueId;
         }
 
         let checkRefData = await this.getTreasuryCheckRefAndAvailableUtxo(treasuryCheckVH, false);
+        console.log("\n\n...parseTreasuryNftUtxoChangeData checkRefData: ", checkRefData);
         if (undefined == checkRefData) {
             this.utxosManagerObj.releaseUtxos(treasuryUtxo);
             throw "empty treasury check ref utxo  for uniqueId: " + uniqueId;
@@ -812,7 +933,7 @@ class PlutusNftTxBuilder {
 
         // Step 3: to get payment from leader
         let feeValue = new Array();
-        let feeAmount = CardanoWasm.BigNum.from_str("5000000").checked_add(marginAda);
+        let feeAmount = CardanoWasm.BigNum.from_str(LEADER_FEE_AMOUNT).checked_add(marginAda);
         let valueItem = {
             "unit": "lovelace",
             "name": "",
@@ -845,8 +966,8 @@ class PlutusNftTxBuilder {
         //TODO：utxosForFee 
         let validTTL = this.curChainTip.slot + Config.MaxTxTTL;
         const nonce = {
-            "txHash": treasuryCheckUxto.txHash, // "9caaf865d51fc7ce403f624a260f397c0d1ac6512ebe50809d7cb09932b1d007", //
-            "index": treasuryCheckUxto.index // 0 //
+            "txHash": treasuryCheckUxto.txHash,
+            "index": treasuryCheckUxto.index
         };
 
         let ttl2Ts = validTTL;
@@ -874,17 +995,18 @@ class PlutusNftTxBuilder {
             to, crossValue: crossValue, policy_id: nftPolicyId,
             txHash: nonce.txHash, index: nonce.index, mode: this.signMode,
             txType: Config.TaskType.crossTask, uniqueId: uniqueId,
-            signature: '', ttl: ttl2Ts
+            signature: '', ttl: ttl2Ts, txTTL: validTTL
         };
         this.logger.debug(".....PlutusNftTxBuilder...", uniqueId, "...redeemerProof: ", JSON.stringify(redeemerProof));
-
-        const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
+        console.log("\n\n.....PlutusNftTxBuilder......redeemerProof: ", JSON.stringify(redeemerProof));
 
         try {
+            const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
             this.logger.debug(".....PlutusNftTxBuilder...", uniqueId, "...caculateRedeemDataHash: ", redeemProofHash);
+
             let signature = await internalSignFunc(partialRedeemerArgs, redeemerProof, redeemProofHash);
             redeemerProof.signature = signature;
-            // this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftRawTx internalSignFunc: ", signature);
+            // console.log("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftRawTx internalSignFunc: ", signature);
         } catch (e) {
             this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftRawTx internalSignFunc exception: ", e);
 
@@ -902,7 +1024,7 @@ class PlutusNftTxBuilder {
         // this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftRawTx transferValue: ", transferValue);
         try {
             const signedTxOutBound = await this.contractService.transferFromTreasury(this.protocolParams, utxosForFee,
-                treasuryUtxo, treasuryRef, this.groupInfoToken, crossValue, to, redeemerProof, utxosForFee,
+                treasuryUtxo, treasuryRef, this.groupInfoToken, redeemerProof, utxosForFee,
                 treasuryCheckUxto, treasuryCheckRef, this.paymentAddress, this.evaluateFn.bind(this), this.signFn.bind(this),
                 metaData, validTTL);
 
@@ -911,6 +1033,7 @@ class PlutusNftTxBuilder {
 
         } catch (e) {
             this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftRawTx error: ", e);
+            this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...release object contains treasury Utxo: ", JSON.stringify(treasuryUtxo));
 
             this.utxosManagerObj.releaseUtxos(treasuryCheckUxto);
             this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...release treasury check Utxo.");
@@ -927,7 +1050,7 @@ class PlutusNftTxBuilder {
         const to = basicArgs.crossAddress;
         const metaData = basicArgs.metaData;
         const uniqueId = basicArgs.hashX;
-        const nftRefAssets = ""; // 
+        const nftRefAssets = basicArgs.nftRefAssets; // 
         // this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftMintRawTx current slot: ", this.curChainTip.slot);
         // Step 1-1: to coin select treasury utxos for transfer
         let transferAmount = new Array();
@@ -968,11 +1091,10 @@ class PlutusNftTxBuilder {
         }
         let mintCheckUxto = mintCheckRefData.checkUtxo;
         let mintCheckRef = mintCheckRefData.checkRef;
-        const mintScript = this.contractService.getMappingTokenScript();
-        // this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...mint check Treasury ref utxo: ", mintCheckUxto, mintCheckRef);
+        // this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...mint check Treasury ref utxo: ", mintCheckUxto, mintCheckRef);        
 
         // Step 1-2: treasury Ref utxo
-        let mappingTokenRef = await this.getScriptRefUtxo(mintScript);
+        let mappingTokenRef = await this.getScriptRefUtxo4MappingToken(mappingPolicyId);
         if (undefined === mappingTokenRef) {
             this.utxosManagerObj.releaseUtxos(mintCheckUxto);
             this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...release mint check Utxo: ", mintCheckUxto);
@@ -982,7 +1104,7 @@ class PlutusNftTxBuilder {
 
         // Step 2: to get leader utxos for mint fee
         let feeValue = new Array();
-        let feeAmount = CardanoWasm.BigNum.from_str("5000000");
+        let feeAmount = CardanoWasm.BigNum.from_str(LEADER_FEE_AMOUNT);
         let valueItem = {
             "unit": "lovelace",
             "name": "",
@@ -1026,8 +1148,8 @@ class PlutusNftTxBuilder {
         let validTTL = this.curChainTip.slot + Config.MaxTxTTL;
         // const nonce = { txHash: mintCheckUxto.txHash, index: mintCheckUxto.index };
         const nonce = {
-            "txHash": "9caaf865d51fc7ce403f624a260f397c0d1ac6512ebe50809d7cb09932b1d007", //mintCheckUxto.txHash, 
-            "index": 0 //mintCheckUxto.index 
+            "txHash": mintCheckUxto.txHash,
+            "index": mintCheckUxto.index
         };
 
         let ttl2Ts = validTTL;
@@ -1051,10 +1173,10 @@ class PlutusNftTxBuilder {
             userData: undefined
         };
 
-        const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, true);
-        this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...caculateRedeemDataHash: ", redeemProofHash);
-
         try {
+            const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, true);
+            this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...caculateRedeemDataHash: ", redeemProofHash);
+
             let signature = await internalSignFunc(partialRedeemerArgs, redeemerProof, redeemProofHash);
             redeemerProof.signature = signature;
         } catch (e) {
@@ -1070,7 +1192,7 @@ class PlutusNftTxBuilder {
         try {
             // nftRefHolderAddr
             const signedTxOutBound = await this.contractService.mint(this.protocolParams, utxosForFee, collateralUtxos, mappingTokenRef,
-                mintCheckRef, this.groupInfoToken, mintCheckUxto, redeemerProof, nftRefHolderAddr, this.paymentAddress,
+                mintCheckRef, this.groupInfoToken, mintCheckUxto, redeemerProof, this.nftRefHolderAddr, this.paymentAddress,
                 this.evaluateFn.bind(this), this.signFn.bind(this), validTTL, metaData);
 
             this.logger.debug("..PlutusNftTxBuilder...", uniqueId, "...buildAndSignNftMintRawTx...signedTxOutBound finished. ");
@@ -1092,7 +1214,6 @@ class PlutusNftTxBuilder {
         console.log("..caculateUtxoPriorityByAssetMask assetMask: ", assetMask);
 
         let utxoPriorityAry = new Array();
-        const WeightPrioriyPerAsset = 1000;
 
         for (let i = 0; i < formatUtxos.length; i++) {
 
@@ -1117,17 +1238,15 @@ class PlutusNftTxBuilder {
                     let bnItemAmount = CardanoWasm.BigNum.from_str(strItemAmount);
                     // let ret = bnItemAmount.compare(bnAssetAmount);                    
                     if (0 > bnItemAmount.compare(bnAssetAmount)) {
-                        amountPriority = 1; // the amount is less than required amount                    
+                        amountPriority = parseInt(strItemAmount); // the amount is less than required amount                    
                     } else {
-                        amountPriority = 2; // the amount satisfy required amount
+                        amountPriority = parseInt(strAssetAmount); // the amount satisfy required amount
                     }
 
                     // to count the priority of asset amount
                     utxoPriority = utxoPriority + amountPriority;
-                    // to count the priority of asset unit
-                    utxoPriority = utxoPriority + WeightPrioriyPerAsset;
                     // to statistic the related asset info of this utxo
-                    mapUtxoAssetInfo.set(itemAsset.unit, strItemAmount); // the unit takes no '.' 
+                    mapUtxoAssetInfo[itemAsset.unit] = strItemAmount; // the unit takes no '.' 
                 }
             }
 
@@ -1145,12 +1264,12 @@ class PlutusNftTxBuilder {
         return utxoPriorityAry;
     }
 
-    caculateNftUtxosPriority(availableUtxos, transferNftAmount) {
+    caculateNftUtxosPriority(formatUtxos, transferNftAmount) {
         // step 1: to generate asset mask based on transferNftAmount
         let mapAssetMask = this.commonUtil.genAssetMaskByAmount(transferNftAmount);
 
         // step 2: to caculate utxo priority based on assetMask
-        let utxoPriorityAry = this.caculateUtxoPriorityByAssetMask(mapAssetMask, availableUtxos);
+        let utxoPriorityAry = this.caculateUtxoPriorityByAssetMask(mapAssetMask, formatUtxos);
 
         // step 3: to sort the utxos by priority
         utxoPriorityAry.sort(this.commonUtil.compareByProperty("priority"));
@@ -1173,12 +1292,20 @@ class PlutusNftTxBuilder {
         return targetUtxo;
     }
 
-    selectBalanceNftUtxos(selectedNftUtxos, totalUtxos, transferAmount) {
+    selectBalanceNftUtxos(reservdUtxo, totalUtxos, marginAmount, transferAmount) {
         // step 1: to check if takes available nft utxos out of pending comsumed utxos or preReserved utxos
-        let availableUtxos = this.utxosManagerObj.checkAvailableUtxos(this.lockerScAddress, totalUtxos, false, undefined, true);
+        let formatedUtxos = this.utxosManagerObj.checkAvailableUtxos(this.lockerScAddress, totalUtxos, false, undefined, true);
+        // let formatedUtxos = this.commonUtil.formatUtxoData(availableUtxos);
 
+        let selectedNftUtxos = new Array(); // the object of selectedNftUtxos should be formated utxo
+        if (undefined !== reservdUtxo) {
+            let aryReservdUtxos = new Array();
+            aryReservdUtxos.push(reservdUtxo); // reservdUtxo is pre-formated utxo
+            selectedNftUtxos = this.commonUtil.formatUtxoData(aryReservdUtxos);
+        }
+
+        let nftAmount = marginAmount;
         // in case need to select more suitable utxo for balance
-        let nftAmount = transferAmount;
         let marginNftAmount = undefined;
         do {
             if (Config.PlutusCfg.maxUtxoNum <= selectedNftUtxos.length) {
@@ -1192,28 +1319,21 @@ class PlutusNftTxBuilder {
             nftAmount.sort(this.commonUtil.compareByProperty("amount"));
 
             // to get the suitable with the top priority for nft balance
-            let targetUtxoObj = this.getTargetUtxoForNftBalance(availableUtxos, nftAmount);
+            let utxoPriorityAry = this.caculateNftUtxosPriority(formatedUtxos, nftAmount);
+            let targetUtxoObj = utxoPriorityAry[0];
             if (undefined === targetUtxoObj) {
                 return undefined;
             }
 
             // step 3:  udpate availableUtxos:  split this utxo away from array
-            for (let j = 0; j < availableUtxos.length; j++) {
-                let utxoObj = availableUtxos[j];
+            for (let j = 0; j < formatedUtxos.length; j++) {
+                let utxoObj = formatedUtxos[j];
                 let utxoId = this.commonUtil.encodeUtxo(utxoObj).to_hex();
 
                 if (targetUtxoObj.utxoId === utxoId) {
-                    let txId = utxoObj.txIn.txId;
-                    let txIndex = utxoObj.txIn.index;
-                    for (let k = 0; k < totalUtxos.length; k++) {
-                        let utxo = totalUtxos[k];
-                        if ((txId === utxo.txHash) && (txIndex === utxo.index)) {
-                            selectedNftUtxos.push(utxo);
-                            break;
-                        }
-                    }
-                    // remove this utxo from availableUtxos
-                    availableUtxos.splice(j, 1);
+                    selectedNftUtxos.push(utxoObj);
+                    // remove this utxo from availableUtxos list
+                    formatedUtxos.splice(j, 1);
                     break;
                 }
             }
@@ -1229,31 +1349,42 @@ class PlutusNftTxBuilder {
 
         } while (true);
 
-        // to mark the status of selected utxos as pendingConsumed
-        let formatedUtxos = this.commonUtil.formatUtxoData(selectedNftUtxos);
-        for (let i = 0; i < formatedUtxos.length; i++) {
-            let formatedUtxoObj = formatedUtxos[i];
+        // Step 4: to mark the status of selected utxos as pendingConsumed
+        for (let i = 0; i < selectedNftUtxos.length; i++) {
+            let formatedUtxoObj = selectedNftUtxos[i];
             // to add new pending consumed utxos
             this.utxosManagerObj.appendPendingComsumedUtxo(this.lockerScAddress, formatedUtxoObj, this.curChainTip.slot);
         }
 
         let targetNftAmount = this.commonUtil.caculateTargetNftAmount(transferAmount, marginNftAmount);
-        // to return selected utxos
+        // Step 5: to return the merged-balance selection result
         let ret = {
-            "selectedUtxos": selectedNftUtxos,
-            "marginAmount": marginNftAmount,
-            "targetAmount": targetNftAmount
+            "selectedUtxos": selectedNftUtxos,  // selected utxos for nft-merged-balance
+            "marginAmount": marginNftAmount,    // the margin amounts after merged-balance
+            "targetAmount": targetNftAmount // the target amounts of merged-balance 
         }
         console.log("....selectBalanceNftUtxos..result: ", ret);
+        this.logger.debug("..PlutusNftTxBuilder...selectBalanceNftUtxos...result: ", ret);
         return ret;
     }
 
-    // targetUtxos is formated utxo objects for balance 
-    async handleNftUtxosBalance(internalSignFunc, targetUtxos, transferNftAmount, uniqueId, nftPolicyId) {
+    // selectedFormatedUtxos is formated utxo objects for balance 
+    async handleNftUtxosBalance(internalSignFunc, totalUtxos, selectedFormatedUtxos, transferNftAmount, uniqueId, nftPolicyId) {
+
         if (undefined === this.lockerScAddress) {
             this.logger.debug("..PlutusNftTxBuilder...handleNftUtxosBalance...failed to initial sdk!");
+            let ret = await this.init();
+            if (false === ret) {
+                return undefined;
+            }
+        }
+
+        let bRet = await this.getCurChainParams();
+        if (false === bRet) {
             return undefined;
         }
+
+        let targetUtxos = this.commonUtil.filterUtxosFromFormatedUtxos(totalUtxos, selectedFormatedUtxos);
 
         let nftAssets = {};
         for (let i = 0; i < transferNftAmount.length; i++) {
@@ -1296,7 +1427,7 @@ class PlutusNftTxBuilder {
         // let formatedUtxos = this.commonUtil.formatUtxoData(targetUtxos);
         let treasuryUtxoChangeInfo = this.commonUtil.parseTreasuryNftUtxoChangeData(
             this.protocolParams,
-            targetUtxos,
+            selectedFormatedUtxos,
             transferNftAmount,
             this.lockerScAddress);
         if (undefined === treasuryUtxoChangeInfo) {
@@ -1309,11 +1440,11 @@ class PlutusNftTxBuilder {
         let outputNum = treasuryUtxoChangeInfo.outputNum;
         let marginAda = treasuryUtxoChangeInfo.marginAda;
         let minMergedBindAda = treasuryUtxoChangeInfo.mergedBindAda;
-        let mapMergedAmount = treasuryUtxoChangeInfo.mergedAmount;
+        let objMergedAmount = treasuryUtxoChangeInfo.mergedAmount;
 
         // Step 2: to caculate the max fee for balanced tx, on leader account.
         console.log("\n\n\n..PlutusNftTxBuilder...handleNftUtxosBalance...begin to get utxosForFee: ");
-        let bnFeeAmount = CardanoWasm.BigNum.from_str('2000000').checked_add(marginAda);
+        let bnFeeAmount = CardanoWasm.BigNum.from_str(LEADER_FEE_AMOUNT).checked_add(marginAda);
         let feeValue = new Array();
         let valueItem = {
             "unit": "lovelace",
@@ -1356,49 +1487,23 @@ class PlutusNftTxBuilder {
         console.log("..PlutusNftTxBuilder...handleNftUtxosBalance...converted ttl2Ts: ", ttl2Ts);
 
         const nonce = {
-            "txHash": treasuryCheckUxto.txHash, // "9caaf865d51fc7ce403f624a260f397c0d1ac6512ebe50809d7cb09932b1d007", // 
-            "index": treasuryCheckUxto.index  // 0 //
+            "txHash": treasuryCheckUxto.txHash,
+            "index": treasuryCheckUxto.index
         };
         const transferValue = {
             "coins": minMergedBindAda.to_str(),
             "assets": nftAssets
         };
+
+
         const redeemerProof = {
             to: this.lockerScAddress, crossValue: transferValue, policy_id: nftPolicyId,
             txHash: nonce.txHash, index: nonce.index, mode: this.signMode, signature: '',
             txType: Config.TaskType.balancedTask, uniqueId: uniqueId, ttl: ttl2Ts, txTTL: validTTL
         };
-        // this.logger.debug(".....PlutusNftTxBuilder...handleNftUtxosBalance...redeemerProof: ", JSON.stringify(redeemerProof));
-        console.log("..PlutusNftTxBuilder...handleNftUtxosBalance...redeemerProof: ", JSON.stringify(redeemerProof));
-
-        // add mpc inner sign
-        const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
-        console.log("..PlutusNftTxBuilder...handleNftUtxosBalance...redeemProofHash: ", redeemProofHash);
-        // this.logger.debug(".....PlutusNftTxBuilder...handleNftUtxosBalance...caculateRedeemDataHash: ", redeemProofHash);
-
-        try {
-            // sign by leader
-            let tmpPartialRedeemerArgs = {
-                "hashKey": "",
-                "crossTokenAddr": "",
-                "amount": "",
-                "fee": 0,
-                "crossAddressHex": this.lockerScAddress
-            };
-            let signature = await internalSignFunc(tmpPartialRedeemerArgs, redeemerProof, redeemProofHash);
-            console.log("..PlutusNftTxBuilder...handleNftUtxosBalance...signature: ", signature);
-
-            redeemerProof.signature = ""; //signature;
-        } catch (e) {
-            this.logger.debug("..PlutusNftTxBuilder...handleNftUtxosBalance internalSignFunc exception: ", e);
-            this.utxosManagerObj.releaseUtxos(targetUtxos);
-            this.logger.debug("..PlutusNftTxBuilder...handleNftUtxosBalance release targetUtxos.");
-            this.utxosManagerObj.releaseUtxos(treasuryCheckUxto);
-            this.logger.debug("..PlutusNftTxBuilder...handleNftUtxosBalance release treasuryCheckUxto.");
-            this.utxosManagerObj.releaseUtxos(utxosForFee);
-            this.logger.debug("..PlutusNftTxBuilder...handleNftUtxosBalance release utxosForFee.");
-            return undefined;
-        }
+        // special handle for multiSig in balanceTx-redeemProof 
+        redeemerProof.signature = BalanceTxMultiSig;
+        this.logger.debug(".....PlutusNftTxBuilder...handleNftUtxosBalance...redeemerProof: ", JSON.stringify(redeemerProof));
 
         // Step 4: to build transaction with related params
         this.logger.debug("..PlutusNftTxBuilder......handleNftUtxosBalance...transferFromTreasury: ", transferValue);
@@ -1408,25 +1513,10 @@ class PlutusNftTxBuilder {
         let signedTxOutBound = undefined;
         try {
             signedTxOutBound = await this.contractService.transferFromTreasury(this.protocolParams, utxosForFee,
-                targetUtxos, treasuryRef, this.groupInfoToken, transferValue, this.lockerScAddress, redeemerProof,
+                targetUtxos, treasuryRef, this.groupInfoToken, redeemerProof,
                 utxosForFee, treasuryCheckUxto, treasuryCheckRef, this.paymentAddress, this.evaluateFn.bind(this),
-                this.signFn.bind(this), metaData, validTTL, outputNum);
+                this.signFn.bind(this), metaData, validTTL);
 
-            // to update the preReserved utxo for this ccTask in memeory
-            let txBodyHash = CardanoWasm.hash_transaction(signedTxOutBound.body());
-            // let balanceTxId = this.commonUtil.byteArray2Hexstring(txBodyHash.to_bytes());
-            let balanceTxId = Buffer.from(txBodyHash.to_bytes()).toString('hex');
-            console.log("balance tx Id: ", balanceTxId);
-
-            let reservedUtxo = this.commonUtil.genFormatedUtxo(balanceTxId, 0, this.lockerScAddress, minMergedBindAda, mapMergedAmount);
-            let reservedUtxoId = this.commonUtil.encodeUtxo(reservedUtxo);
-            //  utxoId -> {reservedTxId, reservedAmount({unit -> amount}), reservedSlot}
-            let reservedInfo = {
-                "reservedTxId": uniqueId,
-                "reservedAmount": mapMergedAmount,
-                "reservedSlot": this.curChainTip.slot
-            }
-            this.utxosManagerObj.appendPreReservedUtxoInfo(reservedUtxoId, reservedInfo);
 
         } catch (e) {
             this.logger.error("..PlutusNftTxBuilder......transferFromTreasury...e: ", e);
@@ -1449,6 +1539,22 @@ class PlutusNftTxBuilder {
             txId = await this.connector.sendRawTransaction(signedTxOutBound.to_bytes());
             this.logger.debug("..PlutusTxBuilder......handleNftUtxosBalance......sendRawTransaction :", txId);
 
+            this.utxosManagerObj.deletePreReservedUtxoInfo(uniqueId);
+            let txBodyHash = CardanoWasm.hash_transaction(signedTxOutBound.body());
+            let balanceTxId = Buffer.from(txBodyHash.to_bytes()).toString('hex');
+            console.log("balance tx Id: ", balanceTxId);
+            const reseredUtxoIndex = 1;
+            let strMinBindAda = minMergedBindAda.to_str();
+            this.logger.debug("..PlutusNftTxBuilder......handleNftUtxosBalance...mergedAmount: ", JSON.stringify(objMergedAmount));
+            let reservedUtxo = this.commonUtil.genFormatedUtxo(balanceTxId, reseredUtxoIndex, this.lockerScAddress, strMinBindAda, objMergedAmount);
+            let reservedUtxoId = this.commonUtil.encodeUtxo(reservedUtxo).input().to_hex();
+            let reservedInfo = {
+                "reservedTxId": uniqueId,
+                "reservedAmount": objMergedAmount,
+                "reservedSlot": this.curChainTip.slot
+            }
+            this.utxosManagerObj.appendPreReservedUtxoInfo(reservedUtxoId, reservedInfo);
+            this.logger.debug("..PlutusNftTxBuilder......handleNftUtxosBalance...appendPreReservedUtxoInfo: ", reservedUtxoId, JSON.stringify(reservedInfo));
         } catch (e) {
             this.logger.debug("..PlutusTxBuilder......handleNftUtxosBalance......sendRawTransaction error :", e);
         }
@@ -1470,7 +1576,13 @@ class PlutusNftTxBuilder {
     async evaluateFn(rawTx) {
         // add exception catch for connector
         try {
-            return await this.connector.evaluateTx(CardanoWasm.Transaction.from_hex(rawTx).to_bytes());
+            // return await this.connector.evaluateTx(CardanoWasm.Transaction.from_hex(rawTx).to_bytes());
+            let result = await this.connector.evaluateTx(CardanoWasm.Transaction.from_hex(rawTx).to_bytes());
+            if (undefined !== result.error) {
+                throw "evaluate failed!";
+            } else {
+                return result;
+            }
         } catch (e) {
             this.logger.debug("..PlutusNftTxBuilder......evaluateTx error: ", e);
             throw e;

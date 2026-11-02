@@ -20,7 +20,7 @@ class PlutusTxBuilder {
         this.utxosManagerObj = utxosManager;
 
         this.ADDR_PREFIX = Config.PlutusCfg.testnetPrefix;
-        this.network_id = CardanoWasm.NetworkInfo.testnet().network_id();
+        this.network_id = CardanoWasm.NetworkInfo.testnet_preprod().network_id();
         if (bMainnet) {
             this.ADDR_PREFIX = Config.PlutusCfg.mainnetPrefix;
             this.network_id = CardanoWasm.NetworkInfo.mainnet().network_id();
@@ -28,6 +28,7 @@ class PlutusTxBuilder {
         this.maxPlutusUtxoNum = Config.PlutusCfg.maxUtxoNum;
 
         this.coinsPerUtxoWord = undefined;
+        this.coinsPerUtxoByte = undefined;
         this.minFeeA = undefined;
         this.minFeeB = undefined;
         this.protocolParams = undefined;
@@ -58,20 +59,35 @@ class PlutusTxBuilder {
         this.adaExtraService = new AdaExtraService(this.ADDR_PREFIX);
         this.contractService = new ContractService(bMainnet, this.ADDR_PREFIX, logUtil);
 
+        this.validCheckTokenPolicyId = this.contractService.validCheckTokenPolicyId;
+        this.validMappingCheckTokenPolicyId = this.contractService.validMappingCheckTokenPolicyId;
         this.logger = logUtil;
+
+        this.memScriptRefUtxos = new Array();
     }
 
-    async init() {
-        let stakeCred = await this.getGroupInfoStkVh();
-        this.lockerScAddress = this.contractService.getLockerScAddress(stakeCred);
-        // this.lockerScAddress = "addr_test1xqweycval58x8ryku838tjqypgjzfs3t4qjj0pwju6prgmjwsw5k2ttkze7e9zd3jr00x5nkhmpx97cv6xx25jsgxh2swlkfgp"; // for test
+    init() {
+        // let stakeCred = await this.getGroupInfoStkVh();
+        // this.lockerScAddress = this.contractService.getLockerScAddress(stakeCred);
+        this.lockerScAddress = this.bMainnet ? config.MainNet.TreasuryScAddress : config.TestNet.TreasuryScAddress;
+        if (undefined === this.lockerScAddress) {
+            return false;
+        }
+        console.log("\n\n\n\******* this.lockerScAddress: ", this.lockerScAddress);
 
         this.signMode = this.contractService.getSignMode();
         this.validPolicyId = this.contractService.getValidPolicyId();
-
         this.utxosManagerObj.setTreasuryScAddress(this.lockerScAddress);
 
-        console.log("\n\n\n\******* this.lockerScAddress: ", this.lockerScAddress);
+        return true;
+    }
+
+    getCheckTokenPolicyId() {
+        return this.validCheckTokenPolicyId;
+    }
+
+    getMintCheckTokenPolicyId() {
+        return this.validMappingCheckTokenPolicyId;
     }
 
     //////////////////////////////////////////
@@ -166,7 +182,7 @@ class PlutusTxBuilder {
             throw e;
         }
 
-        let redeemer = this.contractService.deCodeTxRedeemersCbor(txUtxos, bMintCheck);
+        let redeemer = this.contractService.deCodeTxRedeemersCbor(txInfo, txUtxos, bMintCheck);
         return redeemer;
     }
 
@@ -260,18 +276,25 @@ class PlutusTxBuilder {
             return undefined;
         }
 
+        // to filte the valid check token utxos with the valid policyId
+        let validCheckTokenUtxos = this.fiterValidCheckTokenUtxos(availableUtxos);
+        if ((undefined === validCheckTokenUtxos) || (validCheckTokenUtxos.length < 1)) {
+            this.logger.debug("..PlutusTxBuilder...getScriptCheckRefAvailableUtxo...warning: no valid check utxo");
+            return undefined;
+        }
+
         let treasuryCheckUxto = undefined; // availableTreasuryCheckUxto
 
-        let txId = availableUtxos[0].txIn.txId;
-        let txIndex = availableUtxos[0].txIn.index;
+        let txId = validCheckTokenUtxos[0].txIn.txId;
+        let txIndex = validCheckTokenUtxos[0].txIn.index;
         for (let k = 0; k < utxos.length; k++) {
             let utxo = utxos[k];
             if ((txId === utxo.txHash) && (txIndex === utxo.index)) {
                 treasuryCheckUxto = utxo;
-                // this.logger.debug("..PlutusTxBuilder......selected availableUtxos: ", utxo);
+                // this.logger.debug("..PlutusTxBuilder......selected validCheckTokenUtxos: ", utxo);
 
                 // to add new pending consumed utxos for scriptCheckRefAddress
-                this.utxosManagerObj.appendPendingComsumedUtxo(scriptCheckRefAddress, availableUtxos[0], this.curChainTip.slot);
+                this.utxosManagerObj.appendPendingComsumedUtxo(scriptCheckRefAddress, validCheckTokenUtxos[0], this.curChainTip.slot);
 
                 break;
             }
@@ -280,31 +303,84 @@ class PlutusTxBuilder {
         return treasuryCheckUxto;
     }
 
+    fiterValidCheckTokenUtxos(formatUtxos) {
+        let validCheckTokenUtxos = new Array();
+        for (let i = 0; i < formatUtxos.length; i++) {
+
+            let utxoItem = formatUtxos[i];
+            let bValid = this.parseCheckTokenValidity(utxoItem);
+            if (bValid) {
+                validCheckTokenUtxos.push(utxoItem);
+            }
+        }
+
+        return validCheckTokenUtxos;
+    }
+
+    parseCheckTokenValidity(formatUtxo) {
+        let bContainCheckToken = false;
+
+        let txOutData = formatUtxo.txOut;
+        if (1 === txOutData.value.length) {
+            // in case there is just ada asset
+            return false;
+        }
+
+        for (let i = 1; i < txOutData.value.length; i++) {
+            if ("lovelace" === txOutData.value[i].unit) {
+                continue;
+            }
+
+            let tokenPolicyId = txOutData.value[i].unit.slice(0, 56);
+            if ((this.validCheckTokenPolicyId === tokenPolicyId)
+                || (this.validMappingCheckTokenPolicyId === tokenPolicyId)) {
+                bContainCheckToken = true;
+                break;
+            }
+        }
+
+        return bContainCheckToken;
+    }
+
+    fetchRefUtxoFromMem(checkVH) {
+        const ref = this.memScriptRefUtxos.find(o => {
+            let v2Tag = true;
+            let scriptBuff = o.script['plutus:v2'];
+            if (undefined === scriptBuff) {
+                v2Tag = false;
+                scriptBuff = o.script['plutus:v3'];
+            }
+            const buf = Buffer.from(scriptBuff, 'hex');
+            const cborHex = cbor.encode(buf, 'buffer');
+
+            let scriptHash = v2Tag ? CardanoWasm.PlutusScript.from_bytes_v2(cborHex).hash().to_hex() : CardanoWasm.PlutusScript.from_bytes_v3(cborHex).hash().to_hex();
+            return scriptHash == checkVH
+        });
+
+        return ref;
+    }
+
     async getScriptRefUtxoByVH(checkVH) {
-        let refUtxo = await this.utxosManagerObj.getUtxo(this.scriptRefOwnerAddr, false);
         // this.logger.debug(`..PlutusTxBuilder....getScriptRefUtxoByVH ${refUtxo.length} utxos of scriptRefOwner: ${this.scriptRefOwnerAddr} `);
 
-        const ref = refUtxo.find(o => {
-            const buf = Buffer.from(o.script['plutus:v2'], 'hex');
-            const cborHex = Cbor.encode(buf, 'buffer');
-
-            return CardanoWasm.PlutusScript.from_bytes_v2(cborHex).hash().to_hex() == checkVH
-
-        });
+        let ref = this.fetchRefUtxoFromMem(checkVH);
         if (undefined === ref) {
-            return undefined;
+            // refresh scriptRefUtxos from wanOgmiosService
+            this.memScriptRefUtxos = await this.getUtxo(this.scriptRefOwnerAddr, false);
+            ref = this.fetchRefUtxoFromMem(checkVH);
         }
         // this.logger.debug(`..PlutusTxBuilder.... getScriptRefUtxoByVH's ref-utxo: ${JSON.stringify(ref)} `);
         return ref;
     }
 
     async getScriptRefUtxo(script) {
-        let refUtxo = await this.utxosManagerObj.getUtxo(this.scriptRefOwnerAddr, false);
         // this.logger.debug(`..PlutusTxBuilder....get ${refUtxo.length} utxos of scriptRefOwner: ${this.scriptRefOwnerAddr} `);
 
-        const ref = refUtxo.find(o => script.to_hex().indexOf(o.script['plutus:v2']) >= 0);
+        let ref = this.memScriptRefUtxos.find(o => script.to_hex().indexOf(o.script['plutus:v2'] || o.script['plutus:v3']) >= 0);
         if (undefined === ref) {
-            return undefined;
+            // refresh scriptRefUtxos from wanOgmiosService
+            this.memScriptRefUtxos = await this.getUtxo(this.scriptRefOwnerAddr, false);
+            ref = this.memScriptRefUtxos.find(o => script.to_hex().indexOf(o.script['plutus:v2'] || o.script['plutus:v3']) >= 0);
         }
         // this.logger.debug(`..PlutusTxBuilder.... scriptRefOwner's ref-utxo: ${JSON.stringify(ref)} `);
         return ref;
@@ -430,24 +506,33 @@ class PlutusTxBuilder {
                 this.minFeeA = JSON.stringify(this.protocolParams.minFeeCoefficient);
                 this.minFeeB = JSON.stringify(this.protocolParams.minFeeConstant);
                 this.coinsPerUtxoWord = JSON.stringify(this.protocolParams.coinsPerUtxoByte * 2);
+                this.coinsPerUtxoByte = JSON.stringify(this.protocolParams.coinsPerUtxoByte);
                 this.maxTxSize = JSON.stringify(this.protocolParams.maxTxSize);
 
                 const v1 = CardanoWasm.CostModel.new();
                 let index = 0;
-                for (const key in this.protocolParams.costModels["plutus:v1"]) {
-                    v1.set(index, CardanoWasm.Int.new_i32(this.protocolParams.costModels["plutus:v1"][key]));
+                for (let i = 0; i < this.protocolParams.plutusCostModels["plutus:v1"].length; i++) {
+                    v1.set(index, CardanoWasm.Int.new_i32(this.protocolParams.plutusCostModels["plutus:v1"][i]));
                     index++;
                 }
 
                 const v2 = CardanoWasm.CostModel.new();
                 index = 0;
-                for (const key in this.protocolParams.costModels["plutus:v2"]) {
-                    v2.set(index, CardanoWasm.Int.new_i32(this.protocolParams.costModels["plutus:v2"][key]));
+                for (let j = 0; j < this.protocolParams.plutusCostModels["plutus:v2"].length; j++) {
+                    v2.set(index, CardanoWasm.Int.new_i32(this.protocolParams.plutusCostModels["plutus:v2"][j]));
+                    index++;
+                }
+
+                const v3 = CardanoWasm.CostModel.new();
+                index = 0;
+                for (let k = 0; k < this.protocolParams.plutusCostModels["plutus:v3"].length; k++) {
+                    v3.set(index, CardanoWasm.Int.new_i32(this.protocolParams.plutusCostModels["plutus:v3"][k]));
                     index++;
                 }
                 this.protocolParams.costModels = CardanoWasm.Costmdls.new();
                 this.protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v1(), v1);
                 this.protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v2(), v2);
+                this.protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v3(), v3);
 
             } catch (e) {
                 this.logger.debug("..PlutusTxBuilder......getCurChainParams failed: ", e);
@@ -482,7 +567,10 @@ class PlutusTxBuilder {
 
     async confirmTx(txHash) {
         if (undefined === this.lockerScAddress) {
-            throw "failed to initial sdk!";
+            let ret = await this.init();
+            if (false === ret) {
+                throw "failed to initial sdk!";
+            }
         }
         // this.logger.debug("..PlutusTxBuilder...", txHash, "...confirmTx...lockerScAddress: ", this.lockerScAddress);
 
@@ -531,7 +619,10 @@ class PlutusTxBuilder {
         this.paymentSkey = basicArgs.paymentSKey;
 
         if (undefined === this.lockerScAddress) {
-            throw "failed to initial sdk!";
+            let ret = await this.init();
+            if (false === ret) {
+                throw "failed to initial sdk!";
+            }
         }
 
         this.utxosManagerObj.setSmgLeaderAddress(this.paymentAddress);
@@ -627,6 +718,7 @@ class PlutusTxBuilder {
         const metaData = basicArgs.metaData;
         const uniqueId = basicArgs.hashX;
         const userData = partialRedeemerArgs.userData; // cross Router 
+        const addtionalAdaAmount = basicArgs.addtionalAdaAmount; // addtional ada for crossRoute
         this.logger.debug("..PlutusTxBuilder...", uniqueId, "...buildAndSignRawTx current slot: ", this.curChainTip.slot);
 
         // Step 1: to get treasury data
@@ -717,7 +809,7 @@ class PlutusTxBuilder {
             };
             this.mapForcedBalancedStatus.set(assetUnit, forcedBalancedStatus);
             // to mark forced balanced tag
-            this.markBalancedAsset(this.lockerScAddress, tokenId, this.curLatestBlock.time); //  
+            await this.markBalancedAsset(this.lockerScAddress, tokenId, this.curLatestBlock.time); //  
 
             this.utxosManagerObj.releaseUtxos(treasuryCheckUxto);
             // this.logger.debug("..PlutusTxBuilder...", uniqueId, "...release treasury check Utxo: ", treasuryCheckUxto);
@@ -748,7 +840,8 @@ class PlutusTxBuilder {
             transferAmount[0],
             tokenAmount,
             this.protocolParams,
-            this.lockerScAddress
+            this.lockerScAddress,
+            userData
         );
         if (undefined === treasuryUtxoChangeInfo) {
             this.utxosManagerObj.releaseUtxos(treasuryCheckUxto);
@@ -763,6 +856,10 @@ class PlutusTxBuilder {
 
         let feeValue = new Array();
         let feeAmount = CardanoWasm.BigNum.from_str("5000000").checked_add(marginAda);
+        // addtional ada for crossRoute 
+        if (undefined !== addtionalAdaAmount) {
+            feeAmount = feeAmount.checked_add(CardanoWasm.BigNum.from_str(addtionalAdaAmount));
+        }
         let valueItem = {
             "unit": "lovelace",
             "name": "",
@@ -817,14 +914,15 @@ class PlutusTxBuilder {
             to, tokenId: assetUint, amount: tokenAmount, adaAmount,
             txHash: nonce.txHash, index: nonce.index, mode: this.signMode, signature: '',
             pk: this.groupPK, txType: Config.TaskType.crossTask, uniqueId: uniqueId,
-            ttl: ttl2Ts, txTTL: validTTL, outputCount: txOutputNum, userData: userData
+            ttl: ttl2Ts, txTTL: validTTL, outputCount: txOutputNum, userData: userData, additionalAda: addtionalAdaAmount
         };
         this.logger.debug(".....PlutusTxBuilder...", uniqueId, "...redeemerProof: ", JSON.stringify(redeemerProof));
 
-        const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
 
         try {
+            const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
             this.logger.debug(".....PlutusTxBuilder...", uniqueId, "...caculateRedeemDataHash: ", redeemProofHash);
+
             let signature = await internalSignFunc(partialRedeemerArgs, redeemerProof, redeemProofHash);
             redeemerProof.signature = signature;
             // this.logger.debug("..PlutusTxBuilder...", uniqueId, "...buildAndSignRawTx internalSignFunc: ", signature);
@@ -875,6 +973,7 @@ class PlutusTxBuilder {
         const metaData = basicArgs.metaData;
         const uniqueId = basicArgs.hashX;
         const userData = partialRedeemerArgs.userData; // cross Router 
+        const addtionalAdaAmount = basicArgs.addtionalAdaAmount; // addtional ada for crossRoute  
         // this.logger.debug("..PlutusTxBuilder...", uniqueId, "...buildAndSignMintRawTx current slot: ", this.curChainTip.slot);
 
         // Step 1: to get treasury data     
@@ -902,6 +1001,10 @@ class PlutusTxBuilder {
         // Step 2: to get leader utxos for mint fee
         let feeValue = new Array();
         let feeAmount = CardanoWasm.BigNum.from_str("5000000");
+        // addtional ada for crossRoute 
+        if (undefined !== addtionalAdaAmount) {
+            feeAmount = feeAmount.checked_add(CardanoWasm.BigNum.from_str(addtionalAdaAmount));
+        }
         let valueItem = {
             "unit": "lovelace",
             "name": "",
@@ -962,13 +1065,15 @@ class PlutusTxBuilder {
         const redeemerProof = {
             to, tokenId: assetUint, amount: tokenAmount, txHash: nonce.txHash,
             index: nonce.index, mode: this.signMode, signature: '', uniqueId: uniqueId, ttl: ttl2Ts,
-            txTTL: validTTL, userData: userData
+            txTTL: validTTL, userData: userData, additionalAda: addtionalAdaAmount
         };
+        this.logger.debug(".....PlutusTxBuilder...", uniqueId, "...redeemerProof: ", JSON.stringify(redeemerProof));
 
-        const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, true);
-        this.logger.debug("..PlutusTxBuilder...", uniqueId, "...caculateRedeemDataHash: ", redeemProofHash);
 
         try {
+            const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, true);
+            this.logger.debug("..PlutusTxBuilder...", uniqueId, "...caculateRedeemDataHash: ", redeemProofHash);
+
             let signature = await internalSignFunc(partialRedeemerArgs, redeemerProof, redeemProofHash);
             redeemerProof.signature = signature;
         } catch (e) {
@@ -1001,9 +1106,16 @@ class PlutusTxBuilder {
     ////////////////////////////////////////////
     //// PART 4: Utxo Balanced Processing Funs
     ////////////////////////////////////////////
-    markBalancedAsset(scAddress, assetUnit, curBlockSlot) {
+    async markBalancedAsset(scAddress, assetUnit, curBlockSlot) {
         if (undefined === this.mapScBalancedMarkRecord) {
             this.mapScBalancedMarkRecord = new Map();
+        }
+
+        if (undefined === curBlockSlot) {
+            if (undefined === this.curLatestBlock) {
+                await this.getCurChainParams();
+            }
+            curBlockSlot = this.curLatestBlock.time;
         }
 
         // to convert asset unit to format unit
@@ -1369,6 +1481,7 @@ class PlutusTxBuilder {
 
             let bRetry = false;
             do {
+                assetMarkRecord.mergeSlot = assetMarkRecord.markSlot;
 
                 let assetBalancedRet = await this.tryAssetUtxosBalanced(internalSignFunc,
                     paymentInfo,
@@ -1377,6 +1490,7 @@ class PlutusTxBuilder {
 
                 if (false === assetBalancedRet) {
                     bRetry = (assetMarkRecord.mergeSlot < assetMarkRecord.markSlot) ? true : false;
+                    await this.commonUtil.sleep(500);
                 } else {
                     bRetry = false;
                 }
@@ -1651,20 +1765,18 @@ class PlutusTxBuilder {
         // this.logger.debug("..PlutusTxBuilder......buildBalancedTx...validTTL: ", validTTL);
 
         const nonce = { txHash: treasuryCheckUxto.txHash, index: treasuryCheckUxto.index };
-        const tokenAmount = ("lovelace" === assetUnit) ? 0 : balancedValue.asset.get(assetUnit.replace(".", "")).to_str();
+        const tokenAmount = "0"; //("lovelace" === assetUnit) ? 0 : balancedValue.asset.get(assetUnit.replace(".", "")).to_str();
         const tokenId = ("lovelace" === assetUnit) ? "" : assetUnit;
         // this.logger.debug("..PlutusTxBuilder......buildBalancedTx...tokenAmount: ", assetUnit, tokenAmount);
-        const adaAmount = balancedValue.coin.to_str();
+        const adaAmount = "0"; //balancedValue.coin.to_str();
+        const userData = this.commonUtil.genDemoDatum42().to_hex();
         const redeemerProof = {
             to: this.lockerScAddress, tokenId: tokenId, amount: tokenAmount, adaAmount,
             txHash: nonce.txHash, index: nonce.index, mode: this.signMode, signature: '', pk: this.groupPK,
-            txType: Config.TaskType.balancedTask, uniqueId: "", ttl: ttl2Ts, txTTL: validTTL, outputCount: outputNum
+            txType: Config.TaskType.balancedTask, uniqueId: "", ttl: ttl2Ts, txTTL: validTTL,
+            userData: userData, outputCount: outputNum
         };
         this.logger.debug(".....PlutusTxBuilder...buildBalancedTx...redeemerProof: ", JSON.stringify(redeemerProof));
-
-        // add mpc inner sign
-        const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
-        this.logger.debug(".....PlutusTxBuilder...buildBalancedTx...caculateRedeemDataHash: ", redeemProofHash);
 
         try {
             let tmpPartialRedeemerArgs = {
@@ -1674,6 +1786,10 @@ class PlutusTxBuilder {
                 "fee": 0,
                 "crossAddressHex": this.lockerScAddress
             };
+
+            // add mpc inner sign
+            const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
+            this.logger.debug(".....PlutusTxBuilder...buildBalancedTx...caculateRedeemDataHash: ", redeemProofHash);
 
             let signature = await internalSignFunc(tmpPartialRedeemerArgs, redeemerProof, redeemProofHash);
             redeemerProof.signature = signature;
@@ -1855,15 +1971,15 @@ class PlutusTxBuilder {
             return undefined;
         }
 
+        const userData = this.commonUtil.genDemoDatum42().to_hex();
         const redeemerProof = {
             to, tokenId: tokenId, amount: 0, adaAmount,
             txHash: nonce.txHash, index: nonce.index, mode: this.signMode, signature: '',
             pk: this.groupPK, txType: Config.TaskType.crossTask, uniqueId: uniqueId,
-            ttl: ttl2Ts, txTTL: validTTL, outputCount: txOutputNum
+            ttl: ttl2Ts, txTTL: validTTL, userData: userData, outputCount: txOutputNum
         };
         this.logger.debug(".....PlutusTxBuilder...buildAndSignAdaStripTx...redeemerProof: ", JSON.stringify(redeemerProof));
 
-        const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
 
         try {
             let tmpPartialRedeemerArgs = {
@@ -1874,7 +1990,9 @@ class PlutusTxBuilder {
                 "crossAddressHex": bindAdaStripCfg.foundationAddress
             };
 
+            const redeemProofHash = this.contractService.caculateRedeemDataHash(redeemerProof, false);
             this.logger.debug(".....PlutusTxBuilder...buildAndSignAdaStripTx...caculateRedeemDataHash: ", redeemProofHash);
+
             let signature = await internalSignFunc(tmpPartialRedeemerArgs, redeemerProof, redeemProofHash);
             redeemerProof.signature = signature;
             // this.logger.debug("..PlutusTxBuilder...buildAndSignAdaStripTx...buildAndSignRawTx internalSignFunc: ", signature);
@@ -1968,7 +2086,13 @@ class PlutusTxBuilder {
     async evaluateFn(rawTx) {
         // add exception catch for connector
         try {
-            return await this.connector.evaluateTx(CardanoWasm.Transaction.from_hex(rawTx).to_bytes());
+            // return await this.connector.evaluateTx(CardanoWasm.Transaction.from_hex(rawTx).to_bytes());
+            let result = await this.connector.evaluateTx(CardanoWasm.Transaction.from_hex(rawTx).to_bytes());
+            if (undefined !== result.error) {
+                throw "evaluate failed!";
+            } else {
+                return result;
+            }
         } catch (e) {
             this.logger.debug("..PlutusTxBuilder......evaluateTx error: ", e);
             throw e;
