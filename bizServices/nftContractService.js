@@ -14,7 +14,7 @@ class NFTContractService {
         this.ADDR_PREFIX = addrPrefix;
         this.commonUtil = new Common(addrPrefix);
 
-        this.network_id = CardanoWasm.NetworkInfo.testnet().network_id();
+        this.network_id = CardanoWasm.NetworkInfo.testnet_preprod().network_id();
         if (bMainnet) {
             // this.ADDR_PREFIX = Config.PlutusCfg.mainnetPrefix;
             this.network_id = CardanoWasm.NetworkInfo.mainnet().network_id();
@@ -22,6 +22,9 @@ class NFTContractService {
 
         NFTContract.init(bMainnet);
         ContractsMgr.init(bMainnet);
+                        
+        this.validCheckTokenPolicyId = NFTContract.NFTTreasuryCheckTokenScript.policy_id();
+        this.validMappingCheckTokenPolicyId = NFTContract.NFTMintCheckTokenScript.policy_id();
 
         this.logger = logUtil;
     }
@@ -91,7 +94,7 @@ class NFTContractService {
         return redeemProofHash;
     }
 
-    deCodeTxRedeemersCbor(txUtxos, bMintCheck) {
+    deCodeTxRedeemersCbor(txInfo, txUtxos, bMintCheck) {
 
         let tokenPolicyId = NFTContract.NFTTreasuryCheckTokenScript.policy_id();
         if (bMintCheck) {
@@ -160,7 +163,7 @@ class NFTContractService {
         }
 
         const groupInfo = ContractsMgr.GroupNFT.groupInfoFromDatum(groupInfoTokenDatum);
-        let treasuryCheckVH = groupInfo[ContractsMgr.GroupNFT.TreasuryCheckVH];
+        let treasuryCheckVH = groupInfo[ContractsMgr.GroupNFT.NFTTreasuryCheckVH];
         //this.logger.debug("..NFTContractService...getTreasuryCheckVH...treasuryCheckVH: ", treasuryCheckVH);
         return treasuryCheckVH;
     }
@@ -171,7 +174,7 @@ class NFTContractService {
         }
 
         const groupInfo = ContractsMgr.GroupNFT.groupInfoFromDatum(groupInfoTokenDatum);
-        let mintCheckVH = groupInfo[ContractsMgr.GroupNFT.MintCheckVH];
+        let mintCheckVH = groupInfo[ContractsMgr.GroupNFT.NFTMintCheckVH];
         //this.logger.debug("..NFTContractService...getTreasuryMintCheckVH...mintCheckVH: ", mintCheckVH);
         return mintCheckVH;
     }
@@ -185,7 +188,7 @@ class NFTContractService {
         let checkStkVh = groupInfo[ContractsMgr.GroupNFT.StkVh];
         // this.logger.debug("..NFTContractService...getTreasuryCheckAddress...stkVh: ", checkStkVh);
 
-        let vhItemName = bMintCheck ? ContractsMgr.GroupNFT.MintCheckVH : ContractsMgr.GroupNFT.TreasuryCheckVH;
+        let vhItemName = bMintCheck ? ContractsMgr.GroupNFT.NFTMintCheckVH : ContractsMgr.GroupNFT.NFTTreasuryCheckVH;
         let checkPayVh = groupInfo[vhItemName];
         // this.logger.debug("..NFTContractService...getTreasuryCheckAddress...checkPayVh: ", bMintCheck, vhItemName, checkPayVh);
 
@@ -194,8 +197,8 @@ class NFTContractService {
 
         let checkAddress = CardanoWasm.BaseAddress.new(
             this.network_id,
-            CardanoWasm.StakeCredential.from_scripthash(checkPayKeyHash),
-            CardanoWasm.StakeCredential.from_scripthash(checkStkKeyHash) //from_keyhash
+            CardanoWasm.Credential.from_scripthash(checkPayKeyHash),
+            CardanoWasm.Credential.from_scripthash(checkStkKeyHash) //from_keyhash
         );
 
         let strCheckAddress = checkAddress.to_address().to_bech32(this.ADDR_PREFIX);
@@ -256,6 +259,16 @@ class NFTContractService {
             this.logger.debug("..NFTContractService...buildAndSignNftMintRawTx error: ", e);
             throw e;
         }
+    }
+
+    genNFTIdFromAssetName(assetNameHex) {
+        let phk = ContractUtils.genNFTIdFromAssetName(assetNameHex);
+        return phk;
+    }
+
+    genNFTAssetName(nameHex, typeCode) {
+        let phk = ContractUtils.genNFTAssetName(nameHex, typeCode);
+        return phk;
     }
 
 }

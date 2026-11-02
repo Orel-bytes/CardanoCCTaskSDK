@@ -79,7 +79,7 @@ class CommonUtil {
 
     deriveAddress(hashPayPrvkey, hashStakePrvKey) {
 
-        let networkId = CardanoWasm.NetworkInfo.testnet().network_id();
+        let networkId = CardanoWasm.NetworkInfo.testnet_preprod().network_id();
         if (config.PlutusCfg.mainnetPrefix === this.ADDR_PREFIX) {
             networkId = CardanoWasm.NetworkInfo.mainnet().network_id();
         }
@@ -91,8 +91,8 @@ class CommonUtil {
         console.log('\n\n *******CBOR stakePrvKey:', stakePrvKey.to_bech32());
 
         const addressFromPrvKey = CardanoWasm.BaseAddress.new(networkId,
-            CardanoWasm.StakeCredential.from_keyhash(payPrvKey.to_public().hash()),
-            CardanoWasm.StakeCredential.from_keyhash(stakePrvKey.to_public().hash())
+            CardanoWasm.Credential.from_keyhash(payPrvKey.to_public().hash()),
+            CardanoWasm.Credential.from_keyhash(stakePrvKey.to_public().hash())
         );
 
         const addressBech32Prvkey = addressFromPrvKey.to_address().to_bech32();
@@ -179,9 +179,9 @@ class CommonUtil {
         return multAssetValue;
     }
 
-    encodeUtxo(utxoObj) {
-        let txInData = utxoObj.txIn;
-        let txOutData = utxoObj.txOut;
+    encodeUtxo(formatUtxo) {
+        let txInData = formatUtxo.txIn;
+        let txOutData = formatUtxo.txOut;
 
         let transaction_id = CardanoWasm.TransactionHash.from_bytes(Buffer.from(txInData.txId, 'hex'));
         let txInput = CardanoWasm.TransactionInput.new(transaction_id, txInData.index);
@@ -230,17 +230,24 @@ class CommonUtil {
                 // console.log("\n..getMinAdaOfUtxo...token info: ", policy_id, tokenName);
                 const assetName = CardanoWasm.AssetName.new(Buffer.from(tokenName, 'hex'));
 
-                const asset = CardanoWasm.Assets.new();
+                let asset = mutiAsset.get(CardanoWasm.ScriptHash.from_hex(policy_id));
+                if (!asset) asset = CardanoWasm.Assets.new();
                 asset.insert(assetName, CardanoWasm.BigNum.from_str('' + value.assets[tokenId]));
                 mutiAsset.insert(CardanoWasm.ScriptHash.from_hex(policy_id), asset);
             }
 
-            const minAdaWithToken = 1000000 + 1 * value.coins;//1672280
+            //const minAdaWithToken = 1000000 + 1 * value.coins;//1672280        
+            const minAdaWithToken = 1000000 + 1 * (value.coins ? value.coins : 0);//1672280            
             checkedValue = CardanoWasm.Value.new(CardanoWasm.BigNum.from_str(minAdaWithToken + ''));
             checkedValue.set_multiasset(mutiAsset);
 
         } else {
-            if (value.coin().is_zero) value.set_coin(CardanoWasm.BigNum.from_str('1000000'));
+            // if (value.coin().is_zero) value.set_coin(CardanoWasm.BigNum.from_str('1000000'));
+            // console.log(value.to_json());
+            if (value.coin().less_than(CardanoWasm.BigNum.from_str('1000000'))) {
+                // console.log('=====>',value.coin().to_str());
+                value.set_coin(CardanoWasm.BigNum.from_str('1000000'));
+            }
         }
 
         let ownerAddr = owner;
@@ -435,6 +442,45 @@ class CommonUtil {
             }
 
             let encUtxo = this.encodeUtxo(formatUtxo);
+            let tmpUtxoId = encUtxo.input().to_hex();
+            if (tmpUtxoId === utxoId) {
+                return utxoItem;
+            }
+        }
+
+        return undefined;
+    }
+
+
+    filterUtxosFromFormatedUtxos(utxos, formatedUtxos) {
+        let filtedUtxos = new Array();
+
+        for (let i = 0; i < formatedUtxos.length; i++) {
+            let formatUtxoItem = formatedUtxos[i];
+            let formatTxId = formatUtxoItem.txIn.txId;
+            let formatTxIndex = formatUtxoItem.txIn.index;
+
+            for (let j = 0; j < utxos.length; j++) {
+                let utxoItem = utxos[j];
+
+                if ((formatTxId === utxoItem.txHash)
+                    && (formatTxIndex === utxoItem.index)) {
+                    filtedUtxos.push(utxoItem);
+                    break;
+                }
+            }
+        }
+
+        return filtedUtxos;
+    }
+
+
+    getFormatUtxoByUtxoId(formatUtxos, utxoId) {
+
+        for (let i = 0; i < formatUtxos.length; i++) {
+            let utxoItem = utxos[i];
+
+            let encUtxo = this.encodeUtxo(utxoItem);
             let tmpUtxoId = encUtxo.input().to_hex();
             if (tmpUtxoId === utxoId) {
                 return utxoItem;
@@ -691,7 +737,7 @@ class CommonUtil {
             let nftUniqueId = nftUnit + nftName; // the nft unique id should with no '.' 
             // console.log("..caculateMarginNftAmount..nftUniqueId: ", nftUniqueId);
             // nftInfos: map(unit -> amount)
-            let strReservedAmount = reservedAmount.nftInfos.get(nftUniqueId);
+            let strReservedAmount = reservedAmount.nftInfos[nftUniqueId];
             if (undefined === strReservedAmount) {
                 strReservedAmount = "0";
             }
@@ -890,9 +936,13 @@ class CommonUtil {
         return targetUtxos;
     }
 
-    parseTreasuryUtxoChangeData(balancedParseRet, transferAmount, tokenAmount, protocolParams, paymentAddress) {
+    parseTreasuryUtxoChangeData(balancedParseRet, transferAmount, tokenAmount, protocolParams, paymentAddress, userData = undefined) {
 
         let datum = CardanoWasm.PlutusData.new_empty_constr_plutus_data(CardanoWasm.BigNum.from_str('0'));
+        if (undefined !== userData) {
+            datum = CardanoWasm.PlutusData.from_hex(userData);
+        }
+
         let bnOutputNum = CardanoWasm.BigNum.from_str(this.number2String(balancedParseRet.outputNum));
         let formatUtxos = this.formatUtxoData(balancedParseRet.coordinateUtxos);
 
@@ -994,14 +1044,14 @@ class CommonUtil {
         return treasuryUtxoChangeInfo;
     }
 
-    parseTreasuryNftUtxoChangeData(protocolParams, targetUtxos, transferNftAmount, paymentAddress) {
+    parseTreasuryNftUtxoChangeData(protocolParams, formatTargetUtxos, transferNftAmount, paymentAddress) {
         // step 1: caculate input amount
-        let formatUtxos = this.formatUtxoData(targetUtxos);
+        // let formatUtxos = this.formatUtxoData(targetUtxos);
         // totalInputAmount = {
         //     "coin": inputAdaValue,
         //     "asset": mapInputTokenValue // unit -> bnAssetValue
         // };`
-        let totalInputAmount = this.caculateInputValue(formatUtxos);
+        let totalInputAmount = this.caculateInputValue(formatTargetUtxos);
         if (CardanoWasm.BigNum.from_str('0') === totalInputAmount.coin) {
             return undefined;
         }
@@ -1054,7 +1104,16 @@ class CommonUtil {
         }
 
         // step 2: to caculate min ada for changed output utxo
-        let datum = CardanoWasm.PlutusData.new_empty_constr_plutus_data(CardanoWasm.BigNum.from_str('0'));
+        // let datum = CardanoWasm.PlutusData.new_empty_constr_plutus_data(CardanoWasm.BigNum.from_str('0'));
+        const mPlutusList = CardanoWasm.PlutusList.new();
+        mPlutusList.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str('1')));
+
+        let datum = CardanoWasm.PlutusData.new_constr_plutus_data(
+            CardanoWasm.ConstrPlutusData.new(
+                CardanoWasm.BigNum.from_str('0'),
+                mPlutusList
+            ));
+
         let outputNum = 0; // default output num
 
         let bnMinBindAda4Change = CardanoWasm.BigNum.from_str('0');
@@ -1093,11 +1152,12 @@ class CommonUtil {
             "outputNum": outputNum,
             "adaAmount": bnInputCoinValue,
             "marginAda": bnMarginAda,
-            "mergedAmount": mapMergedAmount,
+            "mergedAmount": mergedAssetsObj,
             "mergedBindAda": bnMinBindAda4Merge,
             "changedAmount": mapChangedAmount,
             "changedBindAda": bnChangedBindAda
         }
+        console.log("\n\n..parseTreasuryNftUtxoChangeData..ret : ", JSON.stringify(ret));
 
         return ret;
     }
@@ -1131,39 +1191,66 @@ class CommonUtil {
         return assetMask;
     }
 
-    crc8(buffer) {
-        let crc = 0x00;
-        for (let i = 0; i < buffer.length; i++) {
-            crc ^= buffer[i];
-            for (let j = 0; j < 8; j++) {
-                if (crc & 0x80) {
-                    crc = (crc << 1) ^ 0x07;
-                } else {
-                    crc = crc << 1;
-                }
+    metadata2datum(metadata, version = 0, extra = '') {
+        const ls = CardanoWasm.PlutusList.new();
+
+        const metadataMap = CardanoWasm.PlutusMap.new();
+        for (const key in metadata) {
+            const keydata = Buffer.from(key, 'utf8');
+            const vdataType = typeof metadata[key];
+            let vdata;
+            switch (vdataType) {
+                case 'string':
+                    vdata = CardanoWasm.PlutusData.new_bytes(Buffer.from(metadata[key], 'ascii'));
+                    break;
+                case 'bigint':
+                case 'boolean':
+                case 'number':
+                    vdata = CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str('' + metadata[key]));
+                    break;
+                default:
+                    throw 'wrong metadata element type: [key]' + key
+                    break;
             }
+
+            const tmp = CardanoWasm.PlutusMapValues.new();
+            tmp.add(vdata);
+            metadataMap.insert(CardanoWasm.PlutusData.new_bytes(keydata), tmp);
         }
-        return crc & 0xff;
+
+        ls.add(CardanoWasm.PlutusData.new_map(metadataMap));
+        ls.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(version + '')));
+        if (extra) {
+            ls.add(CardanoWasm.PlutusData.from_hex(extra));
+        } else {
+            ls.add(CardanoWasm.PlutusData.new_empty_constr_plutus_data(CardanoWasm.BigNum.from_str('0')));//from_hex(extra));
+        }
+
+        return CardanoWasm.PlutusData.new_constr_plutus_data(
+            CardanoWasm.ConstrPlutusData.new(
+                CardanoWasm.BigNum.from_str('0'),
+                ls
+            )
+        ).to_hex();
+    }    
+
+    genDemoDatum42() {
+        return CardanoWasm.PlutusData.new_constr_plutus_data(
+            CardanoWasm.ConstrPlutusData.new(
+                CardanoWasm.BigNum.from_str('0'),
+                this.datum42()
+            )
+        )
     }
 
-    // to generate the asset name mapping to the evm token name
-    /*
-        name: token id
-        typeCode: 100
-                222(nft mapping to 721)
-                333(nft mapping to 1155)
-    */
-    genNFTAssetName(name, typeCode) {
-
-        const buffer = Buffer.alloc(2); // 需要计算CRC-8的数据
-        buffer.writeUint16BE(typeCode)
-        console.log(buffer.toString('hex'));
-        const crcValue = this.crc8(buffer);
-        const label = '0' + buffer.toString('hex') + crcValue.toString(16).padStart(2, '0') + '0'
-        return label + Buffer.from(name, 'ascii').toString('hex');
+    datum42() {
+        const ls = CardanoWasm.PlutusList.new();
+        ls.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str('1')));
+        return ls;
     }
 
 }
 
 
 module.exports = CommonUtil;
+

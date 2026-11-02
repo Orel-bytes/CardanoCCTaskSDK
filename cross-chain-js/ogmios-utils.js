@@ -51,9 +51,17 @@ module.exports.getParamProtocol = async function (via = 'ogmios') {
             v2.set(index, CardanoWasm.Int.new_i32(protocolParams.costModels[`plutus:v2`][key]));
             index++;
         }
+
+        const v3 = CardanoWasm.CostModel.new();
+        index = 0;
+        for (const key in protocolParams.costModels[`plutus:v3`]) {
+            v3.set(index, CardanoWasm.Int.new_i32(protocolParams.costModels[`plutus:v3`][key]));
+            index++;
+        }
         protocolParams.costModels = CardanoWasm.Costmdls.new();
         protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v1(), v1);
         protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v2(), v2);
+        protocolParams.costModels.insert(CardanoWasm.Language.new_plutus_v3(), v3);
 
         return protocolParams;
     } else {
@@ -86,10 +94,8 @@ module.exports.getParamProtocol = async function (via = 'ogmios') {
 module.exports.getScriptRefByScriptHash = async function (scriptRefOwnerAddr, scriptHash) {
     let refUtxo = await this.getUtxo(scriptRefOwnerAddr);
     const ref = refUtxo.find(o => {
-        const buf = Buffer.from(o.script['plutus:v2'], 'hex');
-        const cborHex = cbor.encode(buf, 'buffer');
-
-        return CardanoWasm.PlutusScript.from_bytes_v2(cborHex).hash().to_hex() == scriptHash
+        const { script: scriptTmp } = utils.plutusScriptFromScriptRef(o.script);
+        return scriptTmp.hash().to_hex() == scriptHash
 
     });
     return ref;
@@ -213,7 +219,7 @@ module.exports.init_ogmios = async function (hostServer = { host: '127.0.0.1', p
     txSubmitclient = await createTxSubmissionClient(context);
     query = await createStateQueryClient(context);
     const blockHeight = await query.blockHeight();
-    console.log(blockHeight);
+    // console.log(blockHeight);
     // const ss = await this.getUtxo('addr_test1qz6twkzgss75sk379u0e27phvwhmtqqfuhl5gnx7rh7nux2xg4uwrhx9t58far8hp3a06hfdfzlsxgfrzqv5ryc78e4s4dwh26')
     // console.log(blockHeight);
     // // context.socket.close()
@@ -400,9 +406,9 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, co
     ).checked_add(CardanoWasm.BigNum.from_str('' + protocolParams.minFeeConstant));
 
     const total_fee = plutusCost.checked_add(txfeeWithoutPlutus);
-    console.log('txfeeWithoutPlutus=', txfeeWithoutPlutus.to_str());
-    console.log('plutusCost=', plutusCost.to_str());
-    console.log('total_fee=', total_fee.to_str());
+    // console.log('txfeeWithoutPlutus=', txfeeWithoutPlutus.to_str());
+    // console.log('plutusCost=', plutusCost.to_str());
+    // console.log('total_fee=', total_fee.to_str());
 
     const newBody = CardanoWasm.TransactionBody.new(tx.body().inputs(), tx.body().outputs(), total_fee, tx.body().ttl());
     if (tx.body().auxiliary_data_hash()) newBody.set_auxiliary_data_hash(tx.body().auxiliary_data_hash());
@@ -418,7 +424,7 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, co
         const value = utils.funValue(utxoCollateral.value);
         const from = CardanoWasm.Address.from_bech32(utxoCollateral.address);
         collaterOwnerAddress = from;
-        txCollateralInputBuilder.add_input(from, input, value);
+        txCollateralInputBuilder.add_regular_input(from, input, value);
     }
     newBody.set_collateral(txCollateralInputBuilder.inputs());
 

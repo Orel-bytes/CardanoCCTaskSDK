@@ -1,4 +1,5 @@
 const CardanoWasm = require('@emurgo/cardano-serialization-lib-nodejs');
+const cbor = require('cbor-sync');
 
 module.exports.initProtocolParams = function (protocolParams, interVia = 'ogmios') {
     if (interVia == 'ogmios') {
@@ -23,6 +24,7 @@ module.exports.initProtocolParams = function (protocolParams, interVia = 'ogmios
                 .max_tx_size(+protocolParams.maxTxSize)//(8000)
                 .coins_per_utxo_word(CardanoWasm.BigNum.from_str(protocolParams.coinsPerUtxoWord + ''))
                 .ex_unit_prices(exUnitPrice)
+                .ref_script_coins_per_byte(CardanoWasm.UnitInterval.new(CardanoWasm.BigNum.from_str('' + protocolParams.minFeeRefScriptCostPerByte), CardanoWasm.BigNum.from_str('1')))
                 .build();
         } else {
             return CardanoWasm.TransactionBuilderConfigBuilder.new()
@@ -33,6 +35,10 @@ module.exports.initProtocolParams = function (protocolParams, interVia = 'ogmios
                 .max_tx_size(+protocolParams.maxTxSize)//(8000)
                 .coins_per_utxo_byte(CardanoWasm.BigNum.from_str(protocolParams.coinsPerUtxoByte + ''))
                 .ex_unit_prices(exUnitPrice)
+                .ref_script_coins_per_byte(CardanoWasm.UnitInterval.new(
+                    CardanoWasm.BigNum.from_str('' + protocolParams.minFeeRefScriptCostPerByte), CardanoWasm.BigNum.from_str('1')))
+                // .deduplicate_explicit_ref_inputs_with_regular_inputs(true)
+                // .prefer_pure_change(true)
                 .build();
         }
     } else {
@@ -56,6 +62,8 @@ module.exports.initProtocolParams = function (protocolParams, interVia = 'ogmios
             .max_tx_size(+protocolParams.max_tx_size)//(8000)
             .coins_per_utxo_byte(CardanoWasm.BigNum.from_str(protocolParams.coins_per_utxo_size))
             .ex_unit_prices(exUnitPrice)
+            .ref_script_coins_per_byte(CardanoWasm.UnitInterval.new(
+                CardanoWasm.BigNum.from_str('' + protocolParams.minFeeRefScriptCostPerByte), CardanoWasm.BigNum.from_str('1')))
             .build();
     }
 
@@ -78,7 +86,7 @@ module.exports.createScriptRef = async function (protocolParams, utxtos, changeA
         const input = CardanoWasm.TransactionInput.new(txId, utxoForFee.index);
         const value = this.funValue(utxoForFee.value);
         const from = CardanoWasm.Address.from_bech32(utxoForFee.address);
-        txInputBuilder.add_input(from, input, value);
+        txInputBuilder.add_regular_input(from, input, value);
         // const fee = txBuilder.fee_for_input(from, input, value);
         // allFee = allFee.checked_add(fee);
     }
@@ -125,7 +133,7 @@ module.exports.transfer = async (protocolParams, utxtoInputs, to, funValue, chan
         const input = CardanoWasm.TransactionInput.new(txId, utxo.index);
         const value = this.funValue(utxo.value);
         const from = CardanoWasm.Address.from_bech32(utxo.address);
-        txInputBuilder.add_input(from, input, value);
+        txInputBuilder.add_regular_input(from, input, value);
     }
 
     const minimumAda = this.getMinAdaOfUtxo(protocolParams, to, funValue, datum, script);
@@ -175,7 +183,9 @@ module.exports.getMinAdaOfUtxo = function (protocolParams, owner, value, datum, 
             const [policy_id, tokenName] = tokenId.split('.');
             const assetName = CardanoWasm.AssetName.new(Buffer.from(tokenName, 'hex'));
 
-            const asset = CardanoWasm.Assets.new();
+
+            let asset = mutiAsset.get(CardanoWasm.ScriptHash.from_hex(policy_id));
+            if(!asset) asset = CardanoWasm.Assets.new();
             asset.insert(assetName, CardanoWasm.BigNum.from_str('' + value.assets[tokenId]));
             mutiAsset.insert(CardanoWasm.ScriptHash.from_hex(policy_id), asset);
         }
@@ -191,7 +201,7 @@ module.exports.getMinAdaOfUtxo = function (protocolParams, owner, value, datum, 
         }
     }
 
-    // console.log(typeof owner);
+    // console.log(checkedValue.to_json());
     let ownerAddr = owner;
     if (!(owner instanceof CardanoWasm.Address)) {
         ownerAddr = CardanoWasm.Address.from_bech32(owner);
@@ -436,11 +446,10 @@ module.exports.addressToHashs = function (addrStr) {
     return ret;
 }
 
-
-module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, evaluate, signTx, gasMutipl = 1) {
+module.exports.fixTxExuintByEvaluate = async function (protocolParams,costModesLib, txRaw, scriptSize, evaluate, signTx, gasMutipl = 1) {
     const exUnitEVA = await evaluate(txRaw);
-    console.log(exUnitEVA);
-    if(!exUnitEVA) throw 'evalaute failed';
+    // console.log(exUnitEVA);
+    if (!exUnitEVA) throw 'evalaute failed';
 
     let total_ex_mem = 0;
     let total_ex_cpu = 0;
@@ -489,6 +498,7 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, ev
         // console.log('&&&&&&&2', tx.to_json());
     }
     const redeemers = witnessSset.redeemers();
+    // console.log('1:',redeemers.to_json());
     const redeemersNew = CardanoWasm.Redeemers.new();
     for (let i = 0; i < redeemers.len(); i++) {
         const redeemer = redeemers.get(i);
@@ -538,36 +548,52 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, ev
         CardanoWasm.BigNum.from_str('' + tx.to_bytes().byteLength)
     ).checked_add(CardanoWasm.BigNum.from_str('' + protocolParams.minFeeConstant));
 
-    const total_fee = plutusCost.checked_add(txfeeWithoutPlutus);
-    console.log('txfeeWithoutPlutus=', txfeeWithoutPlutus.to_str());
-    console.log('plutusCost=', plutusCost.to_str());
-    console.log('total_fee=', total_fee.to_str());
+    const caculateRefScriptFee = function (size, base) {
+        const size_increment = 25600;
+        const multipler = 1.2;
+
+        const lastSize = size % size_increment;
+        const full_tiers = (size - lastSize) / size_increment;
+        let fee = 0;
+        for (let i = 0; i < full_tiers; i++) {
+            fee += size_increment * Math.pow(multipler, i) * base
+        }
+
+        fee += lastSize * Math.pow(multipler, full_tiers) * base;
+        return Math.ceil(fee);
+    }
+
+    const total_fee = plutusCost.checked_add(txfeeWithoutPlutus).checked_add(CardanoWasm.BigNum.from_str('' + caculateRefScriptFee(scriptSize,protocolParams.minFeeRefScriptCostPerByte*1)));
+    // console.log('txfeeWithoutPlutus=', txfeeWithoutPlutus.to_str());
+    // console.log('plutusCost=', plutusCost.to_str());
+    // console.log('total_fee=', total_fee.to_str());
 
     let collaterOwnerAddress = tx.body().collateral_return().address();
 
     const oldFee = tx.body().fee();
     // const feeGap = total_fee;
-    console.log('collaterOwnerAddress address:',collaterOwnerAddress.to_hex())
+    //此处强制认为collateral address 就是change Address
+    // console.log('collaterOwnerAddress address:', collaterOwnerAddress.to_hex())
     let outputsFinal = CardanoWasm.TransactionOutputs.new();
     for (let i = 0; i < tx.body().outputs().len(); i++) {
         const output = tx.body().outputs().get(i);
-        console.log('output address:',output.address().to_hex())
+        // console.log('output address:', output.address().to_hex())
         if (output.address().to_hex() == collaterOwnerAddress.to_hex()) {
             let newCoin = output.amount().coin();
-            if(oldFee.less_than(total_fee)){
+            if (oldFee.less_than(total_fee)) {
                 newCoin = newCoin.checked_sub(total_fee.checked_sub(oldFee));
-            }else{
+            } else {
                 newCoin = newCoin.checked_add(oldFee.checked_sub(total_fee));
             }
 
             const newValue = CardanoWasm.Value.new(newCoin);
-            if(output.amount().multiasset()) newValue.set_multiasset(output.amount().multiasset());
+            if (output.amount().multiasset()) newValue.set_multiasset(output.amount().multiasset());
             const newOutput = CardanoWasm.TransactionOutput.new(output.address(), newValue);
             outputsFinal.add(newOutput);
-            console.log('old output',output.to_json())
-            console.log('new output',newOutput.to_json())
+            // console.log('old output', output.to_json())
+            // console.log('new output', newOutput.to_json())
         } else {
-            console.log('no change output',output.to_json())
+            // console.log('no change output', output.to_json())
             outputsFinal.add(output);
         }
     }
@@ -582,7 +608,7 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, ev
     // for (let i = 0; i < tx.body().collateral().len(); i++) {
     //     const utxoCollateral = tx.body().collateral().get(i);
 
-    //     txCollateralInputBuilder.add_input(utxoCollateral.);
+    //     txCollateralInputBuilder.add_regular_input(utxoCollateral.);
     // }
     // // newBody.set_collateral(txCollateralInputBuilder.inputs());
     // newBody.set_collateral(tx.body().collateral());
@@ -603,10 +629,12 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, ev
     if (tx.body().required_signers())
         newBody.set_required_signers(tx.body().required_signers());
 
-    const costModesLib = protocolParams.costModels;//getCostModels(protocolParams);
-    const tmp = CardanoWasm.Costmdls.new();
-    tmp.insert(CardanoWasm.Language.new_plutus_v2(), costModesLib.get(CardanoWasm.Language.new_plutus_v2()));
-    const hash = CardanoWasm.hash_script_data(redeemersNew, tmp);
+    // const costModesLib = protocolParams.costModels;//getCostModels(protocolParams);//CardanoWasm.TxBuilderConstants.plutus_conway_cost_models();//
+    // const tmp = CardanoWasm.Costmdls.new();
+
+    // tmp.insert(CardanoWasm.Language.new_plutus_v3(), costModesLib.get(CardanoWasm.Language.new_plutus_v3()));
+    const hash = CardanoWasm.hash_script_data(redeemersNew, costModesLib,tx.witness_set().plutus_data());
+    // console.log('hash:',hash.to_hex());
     newBody.set_script_data_hash(hash);
     if (tx.body().update()) newBody.set_update(tx.body().update());
     if (tx.body().validity_start_interval()) newBody.set_validity_start_interval(tx.body().validity_start_interval());
@@ -618,6 +646,7 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, ev
     if (tx.body().auxiliary_data_hash()) newBody.set_auxiliary_data_hash(tx.body().auxiliary_data_hash());
 
     witnessSset.set_redeemers(redeemersNew);
+    // console.log('2:',redeemersNew.to_json());
     if (tx.witness_set().plutus_data()) witnessSset.set_plutus_data(tx.witness_set().plutus_data());
     {
         const tmptx = CardanoWasm.Transaction.from_hex(txRaw);
@@ -625,18 +654,25 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, ev
 
         const oldWitnessVks = tmptx.witness_set().vkeys();
         const { vkey, signature } = await signTx(CardanoWasm.hash_transaction(newBody).to_hex());
-        const vkeyWitnessTmp = CardanoWasm.Vkeywitness.from_json(JSON.stringify({ vkey, signature }));
-        for (let i = 0; i < oldWitnessVks.len(); i++) {
-            const witnessVkOld = oldWitnessVks.get(i);
-            const vk = witnessVkOld.vkey().to_hex();
-            if (vk == vkeyWitnessTmp.vkey().to_hex()) {
-                const replaceVKWitness = CardanoWasm.Vkeywitness.new(witnessVkOld.vkey(), CardanoWasm.Ed25519Signature.from_hex(signature));
-                witnessVks.add(replaceVKWitness);
-                console.log(replaceVKWitness.to_json());
-            } else {
-                witnessVks.add(witnessVkOld);
+        if (oldWitnessVks) {
+
+            const vkeyWitnessTmp = CardanoWasm.Vkeywitness.from_json(JSON.stringify({ vkey, signature }));
+            for (let i = 0; i < oldWitnessVks.len(); i++) {
+                const witnessVkOld = oldWitnessVks.get(i);
+                const vk = witnessVkOld.vkey().to_hex();
+                if (vk == vkeyWitnessTmp.vkey().to_hex()) {
+                    const replaceVKWitness = CardanoWasm.Vkeywitness.new(witnessVkOld.vkey(), CardanoWasm.Ed25519Signature.from_hex(signature));
+                    witnessVks.add(replaceVKWitness);
+                    console.log(replaceVKWitness.to_json());
+                } else {
+                    witnessVks.add(witnessVkOld);
+                }
             }
+        } else {
+            const newVKWitness = CardanoWasm.Vkeywitness.new(CardanoWasm.Vkey.new(CardanoWasm.PublicKey.from_bech32(vkey)), CardanoWasm.Ed25519Signature.from_hex(signature));
+            witnessVks.add(newVKWitness);
         }
+
         witnessSset.set_vkeys(witnessVks);
     }
 
@@ -648,12 +684,13 @@ module.exports.fixTxExuintByEvaluate = async function (protocolParams, txRaw, ev
 
     const newTx = CardanoWasm.Transaction.new(newBody, witnessSset, tx.auxiliary_data());
 
+
     return newTx;
 }
 
 
-
-module.exports.genNFTAssetName = function (name, typeCode) {
+//typeCode: 100: refNFT 222:NFT 333:FT
+module.exports.genNFTAssetName = function (nameHex, typeCode) {
 
     function crc8(buffer) {
         let crc = 0x00;
@@ -675,5 +712,123 @@ module.exports.genNFTAssetName = function (name, typeCode) {
     console.log(buffer.toString('hex'));
     const crcValue = crc8(buffer);
     const label = '0' + buffer.toString('hex') + crcValue.toString(16).padStart(2, '0') + '0'
-    return label + Buffer.from(name, 'ascii').toString('hex');
+    return label + Buffer.from(nameHex, 'hex').toString('hex');
+}
+
+module.exports.genNFTIdFromAssetName = function (assetNameHex) {
+    const id = assetNameHex.slice(8);
+    const typeCode = parseInt(assetNameHex.slice(1, 5),16);
+    return { typeCode, id };
+}
+
+module.exports.metadata2datum = function (metadata, version = 0, extra = '') {
+    const ls = CardanoWasm.PlutusList.new();
+
+    const metadataMap = CardanoWasm.PlutusMap.new();
+    for (const key in metadata) {
+        const keydata = Buffer.from(key, 'utf8');
+        const vdataType = typeof metadata[key];
+        let vdata;
+        switch (vdataType) {
+            case 'string':
+                vdata = CardanoWasm.PlutusData.new_bytes(Buffer.from(metadata[key], 'ascii'));
+                break;
+            case 'bigint':
+            case 'boolean':
+            case 'number':
+                vdata = CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str('' + metadata[key]));
+                break;
+            default:
+                throw 'wrong metadata element type: [key]' + key
+                break;
+        }
+        const tmp = CardanoWasm.PlutusMapValues.new();
+        tmp.add(vdata);
+        metadataMap.insert(CardanoWasm.PlutusData.new_bytes(keydata), tmp);
+    }
+    ls.add(CardanoWasm.PlutusData.new_map(metadataMap));
+    ls.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(version + '')));
+    if (extra)
+        ls.add(CardanoWasm.PlutusData.from_hex(extra));
+    else
+        ls.add(CardanoWasm.PlutusData.new_empty_constr_plutus_data(CardanoWasm.BigNum.from_str('0')));//from_hex(extra));
+
+    return CardanoWasm.PlutusData.new_constr_plutus_data(
+        CardanoWasm.ConstrPlutusData.new(
+            CardanoWasm.BigNum.from_str('0'),
+            ls
+        )
+    )
+}
+
+
+module.exports.genBizDatum = function (inTokenId,outTokenId, minimumReceive) {
+    const ls = CardanoWasm.PlutusList.new();
+
+    {
+        const direction = inTokenId.toLowerCase() < inTokenId.toLowerCase() ? '1':'0';
+        const directionCbor = CardanoWasm.PlutusData.new_constr_plutus_data(
+            CardanoWasm.ConstrPlutusData.new(
+                CardanoWasm.BigNum.from_str(direction),
+                CardanoWasm.PlutusList.new()
+            )
+        )
+        ls.add(directionCbor);
+    }
+
+    ls.add(CardanoWasm.PlutusData.new_integer(CardanoWasm.BigInt.from_str(minimumReceive + '')));
+
+    return CardanoWasm.PlutusData.new_constr_plutus_data(
+        CardanoWasm.ConstrPlutusData.new(
+            CardanoWasm.BigNum.from_str('0'),
+            ls
+        )
+    ).to_hex()
+}
+
+/**
+ * Create a PlutusScript from a plutus config object.
+ * Uses the `type` field ("PlutusScriptV2" or "PlutusScriptV3") to determine the language version.
+ * @param {object} plutusObj - { type: "PlutusScriptV2"|"PlutusScriptV3", cborHex: string }
+ * @returns {CardanoWasm.PlutusScript}
+ */
+module.exports.plutusScriptFromPlutusObj = function (plutusObj) {
+    const bytes = Buffer.from(plutusObj.cborHex, 'hex');
+    switch (plutusObj.type) {
+        case 'PlutusScriptV3':
+            return CardanoWasm.PlutusScript.from_bytes_v3(bytes);
+        case 'PlutusScriptV2':
+            return CardanoWasm.PlutusScript.from_bytes_v2(bytes);
+        default:
+            throw new Error(`Unknown plutus script type: ${plutusObj.type}`);
+    }
+}
+
+/**
+ * Create a PlutusScript from a scriptRef/UTXO object.
+ * Auto-detects the version from script['plutus:v2'] or script['plutus:v3'].
+ * Performs the Buffer.from → cbor.encode → from_bytes_vX flow.
+ * @param {object} scriptRef - { script: { 'plutus:v2'?: string, 'plutus:v3'?: string }, ... }
+ * @returns {{ script: CardanoWasm.PlutusScript, scriptSize: number }}
+ */
+module.exports.plutusScriptFromScriptRef = function (scriptRef) {
+    let hexBytes, scriptType;
+
+    if (scriptRef.script && scriptRef.script['plutus:v3']) {
+        hexBytes = scriptRef.script['plutus:v3'];
+        scriptType = 'PlutusScriptV3';
+    } else if (scriptRef.script && scriptRef.script['plutus:v2']) {
+        hexBytes = scriptRef.script['plutus:v2'];
+        scriptType = 'PlutusScriptV2';
+    } else {
+        throw new Error('scriptRef does not contain plutus:v2 or plutus:v3 key');
+    }
+
+    const buf = Buffer.from(hexBytes, 'hex');
+    const cborHex = cbor.encode(buf, 'buffer');
+    const script = this.plutusScriptFromPlutusObj({ type: scriptType, cborHex: cborHex.toString('hex') });
+    return {
+        script: script,
+        scriptSize: script.bytes().byteLength
+    };
 }

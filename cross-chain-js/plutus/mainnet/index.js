@@ -24,6 +24,13 @@ const nftMintCheckTokenPlutus = require('./nft-mint-check-token.json');
 const nftTreasuryCheckTokenPlutus = require('./nft-treasury-check-token.json');
 const nftRefHoderPlutus = require('./nft-ref-holder.json')
 
+///////////// msg /////////////////////////////
+const outboundTokenPlutus = require('./outbound-token.json');
+const outboundHolderPlutus = require('./outbound-holder.json');
+const inboundCheckTokenPlutus = require('./inbound-check-token.json');
+const inboundCheckPlutus = require('./inbound-check.json');
+const inboundTokenPlutus = require('./inbound-token.json');
+
 module.exports = {
     groupInfoTokenPlutus
     , groupInfoTokenHolderPlutus
@@ -45,4 +52,10 @@ module.exports = {
     , nftMintCheckTokenPlutus
     , nftTreasuryCheckTokenPlutus
     , nftRefHoderPlutus
+    //------------ msg ------------
+    , outboundTokenPlutus
+    , outboundHolderPlutus
+    , inboundCheckTokenPlutus
+    , inboundCheckPlutus
+    , inboundTokenPlutus
 }

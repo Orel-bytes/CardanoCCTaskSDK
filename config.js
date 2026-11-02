@@ -1,14 +1,14 @@
 
 module.exports = {
-    PlutusCfg:{
-        "collateralAmount": 123450000,  
-        "testnetPrefix": 'addr_test', 
+    PlutusCfg: {
+        "collateralAmount": 123450000,
+        "testnetPrefix": 'addr_test',
         "mainnetPrefix": 'addr',
         "maxUtxoNum": 2,
         "leaderUtxoNumLimit": 3,
         "maxCollacteralUtxosNum": 3
     },
-    ErrorDef:{        
+    ErrorDef: {
         "ErrorCode_NetworkException": 404,
         "ErrorCode_TxSubmitFailed": 405,
         "ErrorCode_TreasuryInsufficent": 406,
@@ -17,8 +17,8 @@ module.exports = {
         "ErrorCode_InSufficentGroupInfoToken": 409,
         "ErrorCode_InvalidParams": 410,
         "ErrorCode_EmptyScriptRefUtxo": 411,
-        "ErrorCode_EmptyCheckRefUtxo":412,
-        "ErrorCode_EmptyCheckUtxo":413,
+        "ErrorCode_EmptyCheckRefUtxo": 412,
+        "ErrorCode_EmptyCheckUtxo": 413,
         "ErrorCode_InvalidPaymentSkey": 414
     },
     AdaTokenId: "0x0000000000000000000000000000000000000000",
@@ -47,14 +47,22 @@ module.exports = {
         "maxPendingUtxoRatio": 75,
         "configValidLatestSlot": 3600
     },
-    CompareResult:{
+    CompareResult: {
         "lt": -1,
         "eq": 0,
         "mt": 1
     },
-    TaskType:{
+    TaskType: {
         "crossTask": 0,
         "balancedTask": 1,
         "manualTask": 2
+    },
+    TestNet:{
+        TreasuryScAddress: "addr_test1xqweycval58x8ryku838tjqypgjzfs3t4qjj0pwju6prgmjwsw5k2ttkze7e9zd3jr00x5nkhmpx97cv6xx25jsgxh2swlkfgp", 
+        NftTreasuryScAddress: "addr_test1xqqw340d77klvhfk4gnzhfrxkkrxahrzmvf27q5sf2mm002wsw5k2ttkze7e9zd3jr00x5nkhmpx97cv6xx25jsgxh2svzq03w"
+    },
+    MainNet:{
+        TreasuryScAddress: "addr1xyw0kswupwx38ljnvq8pwpvae0x69krywdr7cffg3d84ydp9nvv84g58ykxqh90xx6j8ywgjst0dkt430w9lxgdmzncsw5rzpd", 
+        NftTreasuryScAddress: "addr1xy2pp2jvxj5r3yh5xvet4lgyllkx2306s3pgaqrhylela039nvv84g58ykxqh90xx6j8ywgjst0dkt430w9lxgdmzncsgaycvj"
     }
 }

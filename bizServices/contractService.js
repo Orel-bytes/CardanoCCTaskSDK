@@ -13,16 +13,20 @@ class ContractService {
     constructor(bMainnet, addrPrefix, logUtil) {
         this.ADDR_PREFIX = addrPrefix;
         this.commonUtil = new Common(addrPrefix);
-        
-        this.network_id = CardanoWasm.NetworkInfo.testnet().network_id();
+
+        this.network_id = CardanoWasm.NetworkInfo.testnet_preprod().network_id();
         if (bMainnet) {
             // this.ADDR_PREFIX = Config.PlutusCfg.mainnetPrefix;
             this.network_id = CardanoWasm.NetworkInfo.mainnet().network_id();
         }
+        CardanoWasm.CredKind.
 
         Contracts.init(bMainnet);
         // ContractsMgr.init(bMainnet);
-        
+                
+        this.validCheckTokenPolicyId = Contracts.TreasuryCheckTokenScript.policy_id();
+        this.validMappingCheckTokenPolicyId = Contracts.MintCheckTokenScript.policy_id();
+
         this.logger = logUtil;
     }
 
@@ -87,7 +91,7 @@ class ContractService {
         return redeemProofHash;
     }
 
-    deCodeTxRedeemersCbor(txUtxos, bMintCheck) {
+    deCodeTxRedeemersCbor(txInfo, txUtxos, bMintCheck) {
 
         let tokenPolicyId = Contracts.TreasuryCheckTokenScript.policy_id();
         if (bMintCheck) {
@@ -191,8 +195,8 @@ class ContractService {
 
         let checkAddress = CardanoWasm.BaseAddress.new(
             this.network_id,
-            CardanoWasm.StakeCredential.from_scripthash(checkPayKeyHash),
-            CardanoWasm.StakeCredential.from_scripthash(checkStkKeyHash) //from_keyhash
+            CardanoWasm.Credential.from_scripthash(checkPayKeyHash),
+            CardanoWasm.Credential.from_scripthash(checkStkKeyHash) //from_keyhash
         );
 
         let strCheckAddress = checkAddress.to_address().to_bech32(this.ADDR_PREFIX);

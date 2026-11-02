@@ -64,8 +64,8 @@ class UtxoSelectionService {
         return selectionParam_inputs;
     }
 
-    setProtocolParameters(coinsPerUtxoWord, minFeeA, minFeeB, maxTxSize = '10000') {
-        this.coinSelectionInst.setProtocolParameters(coinsPerUtxoWord, minFeeA, minFeeB, maxTxSize);
+    setProtocolParameters(coinsPerUtxoByte, minFeeA, minFeeB, maxTxSize = '10000') {
+        this.coinSelectionInst.setProtocolParameters(coinsPerUtxoByte, minFeeA, minFeeB, maxTxSize);
     }
 
     selectUtxos(utxos, toAddress, value, limit, bNFTMode = false) {
@@ -96,7 +96,8 @@ class UtxoSelectionService {
                 console.log("..UtxoSelectionService selectUtxos......try to select utxos limited by 1 !");
                 let selectedRet = this.coinSelectionInst.randomImprove(selectionParam_inputs,
                     selectionParam_outputs,
-                    1); // the 3rd param should be changed into 20+tokenAssets
+                    1,
+                    outputAddress); // the 3rd param should be changed into 20+tokenAssets
 
                 for (let i = 0; i < selectedRet.input.length; i++) {
                     let utxo = selectedRet.input[i];
@@ -111,7 +112,8 @@ class UtxoSelectionService {
                 try {
                     let selectedRet = this.coinSelectionInst.randomImprove(selectionParam_inputs,
                         selectionParam_outputs,
-                        limit); // the 3rd param should be changed into 20+tokenAssets
+                        limit,
+                        outputAddress); // the 3rd param should be changed into 20+tokenAssets
 
                     for (let i = 0; i < selectedRet.input.length; i++) {
                         let utxo = selectedRet.input[i];
